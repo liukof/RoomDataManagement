@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
+import io
 
 # --- SETUP SUPABASE ---
 try:
@@ -54,27 +55,60 @@ elif menu in ["Locali", "Mappatura Parametri"]:
         st.title(f"🔗 Mappatura Parametri")
         st.caption(f"Progetto: {selected_label}")
         
-        # FORM IN ALTO (Con KEY univoca per evitare l'errore)
-        st.subheader("➕ Aggiungi Nuova Associazione")
+        # --- SEZIONE IMPORTAZIONE (SOPRA) ---
+        with st.expander("📥 Importa Mappature da File"):
+            st.write("Scarica il template, compilalo e caricalo qui.")
+            
+            # Creazione Template CSV in memoria
+            template_df = pd.DataFrame(columns=["Database", "Revit"])
+            csv = template_df.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="⬇️ Scarica Template CSV",
+                data=csv,
+                file_name="template_mappatura.csv",
+                mime="text/csv",
+            )
+            
+            uploaded_file = st.file_uploader("Carica il file compilato", type=["csv", "xlsx"])
+            if uploaded_file:
+                try:
+                    df_import = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                    
+                    if all(col in df_import.columns for col in ["Database", "Revit"]):
+                        st.write("Anteprima dati:")
+                        st.dataframe(df_import, height=200)
+                        
+                        if st.button("🚀 Conferma Caricamento Massivo"):
+                            batch = [{"project_id": project_id, "db_column_name": str(r['Database']), "revit_parameter_name": str(r['Revit'])} for _, r in df_import.iterrows()]
+                            supabase.table("parameter_mappings").insert(batch).execute()
+                            st.success(f"Caricate {len(batch)} mappature!")
+                            st.rerun()
+                    else:
+                        st.error("Il file deve contenere le colonne 'Database' e 'Revit'")
+                except Exception as e:
+                    st.error(f"Errore: {e}")
+
+        st.divider()
+
+        # --- SEZIONE INSERIMENTO SINGOLO ---
+        st.subheader("➕ Aggiungi Associazione Singola")
         with st.form(key="form_mapping_nuovo", clear_on_submit=True):
             c1, c2 = st.columns(2)
             db_col = c1.text_input("Nome Colonna DB")
             rev_param = c2.text_input("Nome Parametro Revit")
             if st.form_submit_button("Salva Associazione"):
                 if db_col and rev_param:
-                    try:
-                        supabase.table("parameter_mappings").insert({
-                            "project_id": project_id,
-                            "db_column_name": db_col,
-                            "revit_parameter_name": rev_param
-                        }).execute()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Errore: {e}")
+                    supabase.table("parameter_mappings").insert({
+                        "project_id": project_id, 
+                        "db_column_name": db_col, 
+                        "revit_parameter_name": rev_param
+                    }).execute()
+                    st.rerun()
 
         st.divider()
 
-        # VISUALIZZAZIONE IN BASSO
+        # --- VISUALIZZAZIONE IN BASSO ---
         st.subheader("Configurazione Attiva")
         maps_resp = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
         if maps_resp.data:
