@@ -49,10 +49,10 @@ elif menu == "Rooms":
         st.stop()
 
     project_options = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in projects_list}
-    selected_project_label = st.sidebar.selectbox("Lavora su:", list(project_options.keys()))
+    selected_project_label = st.sidebar.selectbox("Work on:", list(project_options.keys()))
     project_id = project_options[selected_project_label]
 
-    st.title(f"📍 Progetto: {selected_project_label}")
+    st.title(f"📍 Project: {selected_project_label}")
 
     # Visualizzazione Locali (Dinamicamente con "*")
     response = supabase.table("rooms").select("*").eq("project_id", project_id).execute()
@@ -74,4 +74,5 @@ elif menu == "Rooms":
                 supabase.table("rooms").insert(new_data).execute()
                 st.success("Locale salvato!")
                 st.rerun()
+
 
