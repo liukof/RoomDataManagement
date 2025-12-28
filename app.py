@@ -66,13 +66,35 @@ elif menu in ["Locali", "Mappatura Parametri"]:
         st.title(f"🔗 Mappatura Parametri")
         st.caption(f"Progetto Attivo: {selected_project_label}")
         
-        # --- Visualizzazione Tabella Mappature ---
+        # --- 1. FORM PER NUOVA MAPPATURA (ORA SOPRA) ---
+        st.subheader("➕ Aggiungi Nuova Associazione")
+        with st.form("new_mapping", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            db_col = c1.text_input("Nome Colonna DB", placeholder="es: Comments")
+            revit_param = c2.text_input("Nome Parametro Revit", placeholder="es: Commenti")
+            
+            if st.form_submit_button("Salva Associazione"):
+                if db_col and revit_param:
+                    try:
+                        map_data = {
+                            "project_id": project_id,
+                            "db_column_name": db_col,
+                            "revit_parameter_name": revit_param
+                        }
+                        supabase.table("parameter_mappings").insert(map_data).execute()
+                        st.success("Mappatura salvata!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Errore: {e}")
+        
+        st.divider()
+
+        # --- 2. VISUALIZZAZIONE MAPPATURE ESISTENTI (ORA SOTTO) ---
         st.subheader("Configurazione Attiva")
         maps_resp = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
         
         if maps_resp.data:
             df_map = pd.DataFrame(maps_resp.data)
-            # Pulizia e rinomina per l'utente
             df_display = df_map[["db_column_name", "revit_parameter_name"]].rename(columns={
                 "db_column_name": "Colonna Database (Supabase)",
                 "revit_parameter_name": "Parametro Revit Target"
@@ -84,7 +106,6 @@ elif menu in ["Locali", "Mappatura Parametri"]:
                 st.rerun()
         else:
             st.info("Nessuna mappatura trovata. Definisci come i dati del DB devono popolare Revit.")
-
         st.divider()
 
         # --- Form Inserimento Mappatura ---
@@ -137,3 +158,4 @@ elif menu in ["Locali", "Mappatura Parametri"]:
                         st.rerun()
                     else:
                         st.error("Inserisci Numero e Nome.")
+
