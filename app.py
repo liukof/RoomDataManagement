@@ -14,31 +14,31 @@ supabase: Client = create_client(url, key)
 st.set_page_config(page_title="BIM Data Manager", layout="wide")
 
 # --- BARRA DI NAVIGAZIONE ---
-menu = st.sidebar.radio("Naviga", ["Locali", "Nuovo Progetto"])
+menu = st.sidebar.radio("Naviga", ["Rooms", "New Project"])
 
 # --- PAGINA: NUOVO PROGETTO ---
-if menu == "Nuovo Progetto":
-    st.title("➕ Crea Nuovo Progetto")
+if menu == "New Project":
+    st.title("➕ New Project")
     with st.form("create_project"):
-        new_code = st.text_input("Codice Progetto (es. PRJ-002)")
-        new_name = st.text_input("Nome Progetto (es. Scuola Primaria)")
-        submit_prj = st.form_submit_button("Crea Progetto")
+        new_code = st.text_input("Code Project (es. PRJ-002)")
+        new_name = st.text_input("Name Project (es. Scuola Primaria)")
+        submit_prj = st.form_submit_button("Create Project")
         
         if submit_prj:
             if new_code and new_name:
                 try:
                     data = {"project_code": new_code, "project_name": new_name}
                     supabase.table("projects").insert(data).execute()
-                    st.success(f"Progetto '{new_name}' creato con successo!")
+                    st.success(f"Project '{new_name}' created!")
                     st.balloons()
                 except Exception as e:
                     st.error(f"Errore: {e}")
             else:
-                st.warning("Compila tutti i campi.")
+                st.warning("Compile all the fields.")
 
 # --- PAGINA: LOCALI ---
-elif menu == "Locali":
-    st.sidebar.title("🏢 Selezione Progetto")
+elif menu == "Rooms":
+    st.sidebar.title("🏢 Select Project")
     
     # Recuperiamo la lista dei progetti
     projects_resp = supabase.table("projects").select("id, project_name, project_code").execute()
@@ -74,3 +74,4 @@ elif menu == "Locali":
                 supabase.table("rooms").insert(new_data).execute()
                 st.success("Locale salvato!")
                 st.rerun()
+
