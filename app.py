@@ -1,55 +1,63 @@
 import streamlit as st
 from supabase import create_client, Client
 
-# 1. Recupero sicuro delle credenziali
-# In Streamlit Cloud le imposterai nel menu "Secrets"
+# --- SETUP SUPABASE ---
 try:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
 except:
-    st.error("Configurazione mancante! Imposta SUPABASE_URL e SUPABASE_KEY nei Secrets di Streamlit.")
+    st.error("Configurazione mancante nei Secrets!")
     st.stop()
 
 supabase: Client = create_client(url, key)
 
-st.set_page_config(page_title="BIM Room Manager", layout="wide")
+st.set_page_config(page_title="BIM Data Manager", layout="wide")
 
-st.title("🏗️ Gestione Informativa Locali")
-st.sidebar.info("Sincronizzato con il database Supabase della società.")
+# --- 1. NAVIGAZIONE PROGETTI ---
+st.sidebar.title("🏢 Selezione Progetto")
 
-# --- SEZIONE VISUALIZZAZIONE ---
-st.subheader("Locali Pianificati")
+# Recuperiamo la lista dei progetti dal DB
+projects_resp = supabase.table("projects").select("id, project_name, project_code").execute()
+projects_list = projects_resp.data
 
-# Recuperiamo i dati dalla tabella 'rooms' che hai creato con lo script SQL
-response = supabase.table("rooms").select("id, room_number, room_name_planned, department, revit_guid").execute()
-data = response.data
+if not projects_list:
+    st.error("Nessun progetto trovato nel database. Crea un progetto su Supabase!")
+    st.stop()
 
-if data:
-    # Mostriamo una tabella interattiva
-    st.dataframe(data, use_container_width=True)
+# Creiamo un dizionario per il menu a tendina
+project_options = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in projects_list}
+selected_project_label = st.sidebar.selectbox("Lavora su:", list(project_options.keys()))
+project_id = project_options[selected_project_label]
+
+st.title(f"📍 Progetto: {selected_project_label}")
+
+# --- 2. VISUALIZZAZIONE DINAMICA ---
+st.subheader("Locali e Requisiti")
+
+# Usiamo il filtro .eq("project_id", project_id) per vedere solo i locali di quel progetto
+# Selezioniamo "*" per caricare automaticamente ogni nuova colonna aggiunta su Supabase
+response = supabase.table("rooms").select("*").eq("project_id", project_id).execute()
+rooms_data = response.data
+
+if rooms_data:
+    st.dataframe(rooms_data, use_container_width=True)
 else:
-    st.warning("Nessun locale presente nel database.")
+    st.info("Nessun locale inserito per questo progetto.")
 
-# --- SEZIONE INSERIMENTO ---
-with st.sidebar:
-    st.header("➕ Nuovo Locale")
-    with st.form("form_nuovo_locale"):
-        num = st.text_input("Numero Locale (es. 101)")
-        name = st.text_input("Nome Locale (es. Ufficio)")
-        dept = st.selectbox("Dipartimento", ["Amministrazione", "Tecnico", "Produzione", "Logistica"])
-        # Supponiamo di avere già un progetto con ID 1 per i test
-        btn = st.form_submit_button("Aggiungi al DB")
+# --- 3. INSERIMENTO DINAMICO ---
+with st.sidebar.expander("➕ Aggiungi Locale"):
+    with st.form("new_room"):
+        num = st.text_input("Numero Locale")
+        name = st.text_input("Nome Programmato")
+        # Nota: Qui puoi aggiungere altri campi o lasciarli vuoti per aggiornarli dopo
         
+        btn = st.form_submit_button("Salva")
         if btn:
-            nuovo_locale = {
-                "room_number": num,
-                "room_name_planned": name,
-                "department": dept,
-                "project_id": 1 # Assicurati di aver creato almeno un progetto nella tabella 'projects'
+            new_data = {
+                "room_number": num, 
+                "room_name_planned": name, 
+                "project_id": project_id
             }
-            try:
-                supabase.table("rooms").insert(nuovo_locale).execute()
-                st.success(f"Locale {num} aggiunto correttamente!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Errore: {e}")
+            supabase.table("rooms").insert(new_data).execute()
+            st.success("Locale salvato!")
+            st.rerun()
