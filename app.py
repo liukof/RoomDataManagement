@@ -41,7 +41,7 @@ if menu in ["Locali", "Mappatura Parametri"]:
     st.title(f"{'📍' if menu == 'Locali' else '🔗'} {menu}")
     st.caption(f"Commessa: **{selected_label}**")
 
-    # --- 1. PAGINA: LOCALI (EDITOR + IMPORT/EXPORT) ---
+    # --- 1. PAGINA: LOCALI (EDITOR + IMPORT/EXPORT UPSERT) ---
     if menu == "Locali":
         # Recupero mappature per colonne dinamiche
         maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
@@ -53,7 +53,6 @@ if menu in ["Locali", "Mappatura Parametri"]:
             
             with col_ex1:
                 st.write("**Esporta / Template**")
-                # Prepariamo i dati per il download
                 rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
                 export_data = []
                 for r in rooms_raw.data:
@@ -63,34 +62,37 @@ if menu in ["Locali", "Mappatura Parametri"]:
                     export_data.append(row)
                 
                 df_export = pd.DataFrame(export_data) if export_data else pd.DataFrame(columns=["room_number", "room_name_planned"] + mapped_params)
-                
                 buffer_exp = io.BytesIO()
                 with pd.ExcelWriter(buffer_exp, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, index=False, sheet_name='Locali')
-                
                 st.download_button("⬇️ Scarica Elenco/Template", data=buffer_exp.getvalue(), file_name=f"locali_{selected_label}.xlsx")
 
             with col_ex2:
-                st.write("**Importa**")
-                up_rooms = st.file_uploader("Carica file Locali", type=["xlsx", "csv"], key="up_rooms")
-                if up_rooms and st.button("🚀 Avvia Importazione Locali"):
+                st.write("**Importa (Update o Insert)**")
+                up_rooms = st.file_uploader("Carica file Locali", type=["xlsx", "csv"])
+                if up_rooms and st.button("🚀 Avvia Sincronizzazione Locali"):
                     df_up = pd.read_excel(up_rooms) if up_rooms.name.endswith('.xlsx') else pd.read_csv(up_rooms)
-                    count_imp = 0
+                    c_upd, c_ins = 0, 0
+                    
                     for _, row in df_up.iterrows():
                         r_num = str(row.get("room_number", "")).strip()
                         r_name = str(row.get("room_name_planned", "")).strip()
                         if r_num:
-                            # Estraiamo i parametri che corrispondono alla mappatura
-                            params_to_save = {p: str(row[p]) for p in mapped_params if p in row and pd.notna(row[p])}
-                            # Upsert (Aggiorna se esiste il numero, altrimenti inserisce - logica semplificata qui come insert)
-                            supabase.table("rooms").insert({
-                                "project_id": project_id,
-                                "room_number": r_num,
-                                "room_name_planned": r_name,
-                                "parameters": params_to_save
-                            }).execute()
-                            count_imp += 1
-                    st.success(f"Importati/Aggiornati {count_imp} locali!")
+                            # Estraiamo parametri mappati
+                            p_save = {p: str(row[p]) for p in mapped_params if p in row and pd.notna(row[p])}
+                            
+                            # Verifica esistenza (UPSERT LOGIC)
+                            exist = supabase.table("rooms").select("id").eq("project_id", project_id).eq("room_number", r_num).execute()
+                            
+                            payload = {"project_id": project_id, "room_number": r_num, "room_name_planned": r_name, "parameters": p_save}
+                            
+                            if exist.data:
+                                supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
+                                c_upd += 1
+                            else:
+                                supabase.table("rooms").insert(payload).execute()
+                                c_ins += 1
+                    st.success(f"Fatto! Aggiornati: {c_upd} | Nuovi: {c_ins}")
                     st.rerun()
 
         st.divider()
@@ -101,8 +103,8 @@ if menu in ["Locali", "Mappatura Parametri"]:
             flat_data = []
             for r in rooms_resp.data:
                 row = {"id": r["id"], "room_number": r["room_number"], "room_name_planned": r["room_name_planned"]}
-                params_json = r.get("parameters") or {}
-                for p in mapped_params: row[p] = params_json.get(p, "")
+                p_json = r.get("parameters") or {}
+                for p in mapped_params: row[p] = p_json.get(p, "")
                 flat_data.append(row)
 
             df_rooms = pd.DataFrame(flat_data)
@@ -114,36 +116,34 @@ if menu in ["Locali", "Mappatura Parametri"]:
 
             if st.button("💾 Salva Modifiche Editor"):
                 for _, row in edited_df.iterrows():
-                    updated_params = {p: row[p] for p in mapped_params if p in row}
-                    supabase.table("rooms").update({
-                        "room_name_planned": row["room_name_planned"],
-                        "parameters": updated_params
-                    }).eq("id", row["id"]).execute()
+                    up_p = {p: row[p] for p in mapped_params if p in row}
+                    supabase.table("rooms").update({"room_name_planned": row["room_name_planned"], "parameters": up_p}).eq("id", row["id"]).execute()
                 st.success("Modifiche salvate!")
                 st.rerun()
         else:
-            st.info("Nessun locale trovato. Usa l'importazione Excel o la sidebar per aggiungerne uno.")
+            st.info("Nessun locale trovato.")
 
         with st.sidebar.expander("➕ Aggiungi Singolo Locale"):
             with st.form("new_room_form"):
                 n_num = st.text_input("Numero")
                 n_nam = st.text_input("Nome")
                 if st.form_submit_button("Aggiungi"):
-                    supabase.table("rooms").insert({"room_number": n_num, "room_name_planned": n_nam, "project_id": project_id, "parameters": {}}).execute()
-                    st.rerun()
+                    if n_num:
+                        supabase.table("rooms").insert({"room_number": n_num, "room_name_planned": n_nam, "project_id": project_id, "parameters": {}}).execute()
+                        st.rerun()
 
-    # --- 2. PAGINA: MAPPATURA PARAMETRI (INVARIATA) ---
+    # --- 2. PAGINA: MAPPATURA PARAMETRI ---
     elif menu == "Mappatura Parametri":
         with st.expander("📥 Importazione Massiva Mappature"):
-            template_df = pd.DataFrame(columns=["Database", "Revit"])
-            buffer_map = io.BytesIO()
-            with pd.ExcelWriter(buffer_map, engine='xlsxwriter') as writer:
-                template_df.to_excel(writer, index=False)
-            st.download_button("⬇️ Scarica Template Mappe", data=buffer_map.getvalue(), file_name="template_mappe.xlsx")
+            tmp_m = pd.DataFrame(columns=["Database", "Revit"])
+            buf_m = io.BytesIO()
+            with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
+                tmp_m.to_excel(writer, index=False)
+            st.download_button("⬇️ Scarica Template Mappe", data=buf_m.getvalue(), file_name="template_mappe.xlsx")
             
-            up_map = st.file_uploader("Carica file Mappe", type=["xlsx", "csv"])
-            if up_map and st.button("🚀 Conferma Import Mappe"):
-                df_m = pd.read_excel(up_map) if up_map.name.endswith('.xlsx') else pd.read_csv(up_map)
+            up_m = st.file_uploader("Carica file Mappe", type=["xlsx", "csv"])
+            if up_m and st.button("🚀 Conferma Import Mappe"):
+                df_m = pd.read_excel(up_m) if up_m.name.endswith('.xlsx') else pd.read_csv(up_m)
                 batch = [{"project_id": project_id, "db_column_name": str(r['Database']).strip(), "revit_parameter_name": str(r['Revit']).strip()} for _, r in df_m.dropna().iterrows()]
                 supabase.table("parameter_mappings").insert(batch).execute()
                 st.rerun()
@@ -154,8 +154,9 @@ if menu in ["Locali", "Mappatura Parametri"]:
             db_c = c1.text_input("Chiave Database")
             rev_p = c2.text_input("Parametro Revit")
             if st.form_submit_button("Salva"):
-                supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_c, "revit_parameter_name": rev_p}).execute()
-                st.rerun()
+                if db_c and rev_p:
+                    supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_c, "revit_parameter_name": rev_p}).execute()
+                    st.rerun()
 
         res_map = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
         if res_map.data:
@@ -165,7 +166,7 @@ if menu in ["Locali", "Mappatura Parametri"]:
                 supabase.table("parameter_mappings").delete().eq("project_id", project_id).execute()
                 st.rerun()
 
-# --- 3. PAGINA: GESTIONE PROGETTI (INVARIATA) ---
+# --- 3. PAGINA: GESTIONE PROGETTI ---
 elif menu == "Gestione Progetti":
     st.title("⚙️ Gestione Progetti")
     t1, t2 = st.tabs(["➕ Nuovo Progetto", "📝 Modifica / Elimina"])
@@ -174,8 +175,9 @@ elif menu == "Gestione Progetti":
             cp = st.text_input("Codice")
             np = st.text_input("Nome")
             if st.form_submit_button("Crea"):
-                supabase.table("projects").insert({"project_code": cp, "project_name": np}).execute()
-                st.rerun()
+                if cp and np:
+                    supabase.table("projects").insert({"project_code": cp, "project_name": np}).execute()
+                    st.rerun()
     with t2:
         if projects_list:
             proj_sel = st.selectbox("Progetto:", {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}.keys())
@@ -186,7 +188,7 @@ elif menu == "Gestione Progetti":
                 supabase.table("projects").update({"project_code": new_c, "project_name": new_n}).eq("id", target['id']).execute()
                 st.rerun()
             st.divider()
-            conf = st.text_input("Scrivi 'ELIMINA'")
+            conf = st.text_input("Scrivi 'ELIMINA' per confermare")
             if st.button("🔥 Elimina Progetto") and conf == "ELIMINA":
                 supabase.table("projects").delete().eq("id", target['id']).execute()
                 st.rerun()
