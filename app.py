@@ -49,20 +49,52 @@ elif menu in ["Locali", "Mappatura Parametri"]:
         st.stop()
 
     st.sidebar.divider()
-    project_options = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in projects_list}
+    project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
     selected_label = st.sidebar.selectbox("Progetto attivo:", list(project_options.keys()))
-    project_id = project_options[selected_label]
+    
+    selected_project = project_options[selected_label]
+    project_id = selected_project['id']
+
+    # --- NUOVA FUNZIONALITÀ: GESTIONE PROGETTO (MODIFICA/ELIMINA) ---
+    st.sidebar.divider()
+    with st.sidebar.expander("⚙️ Gestisci Progetto"):
+        st.subheader("Modifica Dati")
+        # Campi pre-compilati con i valori attuali
+        edit_code = st.text_input("Codice Progetto", value=selected_project['project_code'])
+        edit_name = st.text_input("Nome Progetto", value=selected_project['project_name'])
+        
+        if st.button("💾 Salva Modifiche"):
+            try:
+                supabase.table("projects").update({
+                    "project_code": edit_code,
+                    "project_name": edit_name
+                }).eq("id", project_id).execute()
+                st.toast("Progetto aggiornato!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore: {e}")
+
+        st.divider()
+        st.subheader("🗑️ Zona Pericolo")
+        confirm_text = st.text_input("Scrivi 'ELIMINA' per confermare la cancellazione:")
+        if st.button("🔥 Elimina Progetto"):
+            if confirm_text == "ELIMINA":
+                try:
+                    supabase.table("projects").delete().eq("id", project_id).execute()
+                    st.toast(f"Progetto eliminato!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore: {e}")
+            else:
+                st.warning("Inserisci 'ELIMINA' per confermare.")
 
     # --- 2. PAGINA: MAPPATURA PARAMETRI ---
     if menu == "Mappatura Parametri":
         st.title(f"🔗 Mappatura Parametri")
         st.caption(f"Commessa: {selected_label}")
         
-        # --- SEZIONE IMPORTAZIONE EXCEL ---
         with st.expander("📥 Importazione Massiva (Excel/CSV)"):
             st.write("Scarica il template Excel, compilalo e caricalo qui.")
-            
-            # Generazione Template Excel in memoria
             template_df = pd.DataFrame(columns=["Database", "Revit"])
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
@@ -79,7 +111,7 @@ elif menu in ["Locali", "Mappatura Parametri"]:
             if uploaded_file:
                 try:
                     df_import = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
-                    df_import = df_import.dropna(how='all') # Rimuove righe vuote
+                    df_import = df_import.dropna(how='all')
                     
                     if all(col in df_import.columns for col in ["Database", "Revit"]):
                         st.write("Anteprima dati rilevati:")
@@ -104,8 +136,6 @@ elif menu in ["Locali", "Mappatura Parametri"]:
                     st.error(f"Errore di lettura: {e}")
 
         st.divider()
-
-        # --- INSERIMENTO SINGOLO ---
         st.subheader("➕ Aggiungi Singola Associazione")
         with st.form(key="form_mapping_single", clear_on_submit=True):
             c1, c2 = st.columns(2)
@@ -121,8 +151,6 @@ elif menu in ["Locali", "Mappatura Parametri"]:
                     st.rerun()
 
         st.divider()
-
-        # --- VISUALIZZAZIONE LISTA ---
         st.subheader("📋 Configurazione Attiva")
         maps_resp = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
         if maps_resp.data:
@@ -148,7 +176,7 @@ elif menu in ["Locali", "Mappatura Parametri"]:
         else:
             st.info("Nessun locale presente nel database per questo progetto.")
 
-        with st.sidebar.expander("➕ Inserimento Rapido"):
+        with st.sidebar.expander("➕ Inserimento Rapido Locale"):
             with st.form(key="form_fast_room", clear_on_submit=True):
                 num = st.text_input("Numero Locale")
                 nam = st.text_input("Nome Programmato")
