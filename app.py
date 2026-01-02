@@ -24,10 +24,10 @@ except Exception as e:
     st.stop()
 
 # --- BARRA DI NAVIGAZIONE ---
-st.sidebar.title("🧭 Menu")
+st.sidebar.title("🏗️ BIM Data Manager")
 menu = st.sidebar.radio("Vai a:", ["Locali", "Mappatura Parametri", "Gestione Progetti"])
 
-# --- LOGICA COMUNE E SICUREZZA ---
+# --- LOGICA DI ACCESSO E PROTEZIONE ---
 if menu in ["Locali", "Mappatura Parametri"]:
     if not projects_list:
         st.sidebar.warning("Crea prima un progetto.")
@@ -35,25 +35,42 @@ if menu in ["Locali", "Mappatura Parametri"]:
 
     st.sidebar.divider()
     project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
-    selected_label = st.sidebar.selectbox("Progetto attivo:", list(project_options.keys()))
+    selected_label = st.sidebar.selectbox("Seleziona Progetto:", list(project_options.keys()))
     project_data = project_options[selected_label]
     project_id = project_data['id']
-
-    # --- CONTROLLO PASSWORD ---
-    st.sidebar.subheader("🔒 Accesso Progetto")
-    user_pwd = st.sidebar.text_input("Inserisci Password Progetto", type="password")
     
-    # Verifica password (se non impostata nel DB, di default permettiamo l'accesso o definiamo una standard)
-    correct_pwd = project_data.get('project_password', "")
-    
-    if user_pwd != correct_pwd:
-        st.title(f"Accesso protetto: {selected_label}")
-        st.warning("Inserisci la password corretta nella barra laterale per visualizzare i dati.")
-        st.stop()
+    # Chiave univoca per gestire la sessione di questo specifico progetto
+    auth_key = f"auth_{project_id}"
 
-    # --- SE PASSWORD CORRETTA, MOSTRA CONTENUTO ---
+    # SCHERMATA DI BLOCCO (Se non autenticato)
+    if auth_key not in st.session_state or not st.session_state[auth_key]:
+        # Pulizia layout per il Login
+        st.title("🔒 Accesso Progetto Protetto")
+        st.info(f"Il progetto **{selected_label}** richiede una chiave di accesso.")
+        
+        # Creazione di un form centrale
+        with st.container():
+            col_a, col_b, col_c = st.columns([1, 2, 1])
+            with col_b:
+                with st.form("login_gate"):
+                    pwd_input = st.text_input("Password Progetto", type="password")
+                    submit_login = st.form_submit_button("Sblocca Progetto", use_container_width=True)
+                    
+                    if submit_login:
+                        correct_pwd = project_data.get('project_password', "")
+                        if pwd_input == correct_pwd:
+                            st.session_state[auth_key] = True
+                            st.rerun()
+                        else:
+                            st.error("Password errata. Riprova o contatta l'amministratore.")
+        st.stop() # FERMA IL RESTO DELL'APP QUI
+
+    # --- SE AUTENTICATO, MOSTRA IL CONTENUTO ---
     st.title(f"{'📍' if menu == 'Locali' else '🔗'} {menu}")
     st.caption(f"Commessa: **{selected_label}**")
+    if st.sidebar.button("🔒 Esci dal Progetto"):
+        st.session_state[auth_key] = False
+        st.rerun()
 
     # --- 1. PAGINA: LOCALI ---
     if menu == "Locali":
@@ -61,9 +78,8 @@ if menu in ["Locali", "Mappatura Parametri"]:
         mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
         with st.expander("📥 Import / Export / Reset Locali"):
-            c_ex1, c_ex2, c_ex3 = st.columns(3)
-            with c_ex1:
-                st.write("**Esporta**")
+            c1, c2, c3 = st.columns(3)
+            with c1:
                 rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
                 export_data = []
                 for r in rooms_raw.data:
@@ -76,12 +92,10 @@ if menu in ["Locali", "Mappatura Parametri"]:
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, index=False)
                 st.download_button("⬇️ Scarica Excel", data=buf.getvalue(), file_name=f"locali_{selected_label}.xlsx")
-
-            with c_ex2:
-                st.write("**Importa (Upsert)**")
-                up_rooms = st.file_uploader("Carica file Locali", type=["xlsx", "csv"], key="up_rooms_file")
-                if up_rooms and st.button("🚀 Sincronizza Locali"):
-                    df_up = pd.read_excel(up_rooms) if up_rooms.name.endswith('.xlsx') else pd.read_csv(up_rooms)
+            with c2:
+                up_rooms = st.file_uploader("Importa Excel", type=["xlsx"])
+                if up_rooms and st.button("🚀 Sincronizza"):
+                    df_up = pd.read_excel(up_rooms)
                     for _, row in df_up.iterrows():
                         r_num = str(row.get("room_number", "")).strip()
                         if r_num:
@@ -90,17 +104,14 @@ if menu in ["Locali", "Mappatura Parametri"]:
                             payload = {"project_id": project_id, "room_number": r_num, "room_name_planned": str(row.get("room_name_planned", "")), "parameters": p_save}
                             if exist.data: supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
                             else: supabase.table("rooms").insert(payload).execute()
-                    st.success("Sincronizzazione completata!")
+                    st.success("Sincronizzato!")
                     st.rerun()
-
-            with c_ex3:
-                st.write("**Zona Pericolo**")
-                if st.button("🗑️ SVUOTA TUTTI I LOCALI"):
+            with c3:
+                if st.button("🗑️ RESET TUTTO"):
                     supabase.table("rooms").delete().eq("project_id", project_id).execute()
                     st.rerun()
 
         st.divider()
-
         rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
         if rooms_resp.data:
             flat_data = []
@@ -109,105 +120,86 @@ if menu in ["Locali", "Mappatura Parametri"]:
                 p_json = r.get("parameters") or {}
                 for p in mapped_params: row[p] = p_json.get(p, "")
                 flat_data.append(row)
-
             df_rooms = pd.DataFrame(flat_data)
             df_rooms["Elimina"] = False
-            st.subheader("📝 Editor Locali")
-            edited_df = st.data_editor(df_rooms, column_config={"id": None, "room_number": st.column_config.TextColumn("Numero", disabled=True), "Elimina": st.column_config.CheckboxColumn("Seleziona")}, use_container_width=True, hide_index=True, key="editor_locali")
-
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("💾 SALVA MODIFICHE DATI", use_container_width=True, type="primary"):
-                    for _, row in edited_df.iterrows():
-                        up_p = {p: row[p] for p in mapped_params if p in row}
-                        supabase.table("rooms").update({"room_name_planned": row["room_name_planned"], "parameters": up_p}).eq("id", row["id"]).execute()
-                    st.rerun()
-            with col_btn2:
-                if st.button("🗑️ ELIMINA RIGHE SELEZIONATE", use_container_width=True):
-                    to_del = edited_df[edited_df["Elimina"] == True]
-                    for _, r in to_del.iterrows(): supabase.table("rooms").delete().eq("id", r["id"]).execute()
-                    st.rerun()
-        else:
-            st.info("Nessun locale trovato.")
+            edited_df = st.data_editor(df_rooms, column_config={"id": None, "room_number": st.column_config.TextColumn("Numero", disabled=True), "Elimina": st.column_config.CheckboxColumn("Seleziona")}, use_container_width=True, hide_index=True)
+            
+            cb1, cb2 = st.columns(2)
+            if cb1.button("💾 SALVA MODIFICHE", use_container_width=True, type="primary"):
+                for _, row in edited_df.iterrows():
+                    up_p = {p: row[p] for p in mapped_params if p in row}
+                    supabase.table("rooms").update({"room_name_planned": row["room_name_planned"], "parameters": up_p}).eq("id", row["id"]).execute()
+                st.rerun()
+            if cb2.button("🗑️ ELIMINA SELEZIONATI", use_container_width=True):
+                for _, r in edited_df[edited_df["Elimina"]].iterrows(): supabase.table("rooms").delete().eq("id", r["id"]).execute()
+                st.rerun()
 
     # --- 2. PAGINA: MAPPATURA PARAMETRI ---
     elif menu == "Mappatura Parametri":
-        with st.expander("📥 Import / Export Mappature (Excel)"):
-            c_m1, c_m2 = st.columns(2)
-            with c_m1:
-                st.write("**Esporta / Template**")
-                res_m = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
-                df_m_exp = pd.DataFrame(res_m.data)[["db_column_name", "revit_parameter_name"]] if res_m.data else pd.DataFrame(columns=["Database", "Revit"])
-                df_m_exp.columns = ["Database", "Revit"]
-                buf_m = io.BytesIO()
-                with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
-                    df_m_exp.to_excel(writer, index=False)
-                st.download_button("⬇️ Scarica Template Mappe", data=buf_m.getvalue(), file_name="mappatura_parametri.xlsx")
-            
-            with c_m2:
-                st.write("**Importa Mappe**")
-                up_m = st.file_uploader("Carica file Mappe", type=["xlsx", "csv"])
-                if up_m and st.button("🚀 Carica Mappature"):
-                    df_m_up = pd.read_excel(up_m) if up_m.name.endswith('.xlsx') else pd.read_csv(up_m)
-                    batch = [{"project_id": project_id, "db_column_name": str(r['Database']).strip(), "revit_parameter_name": str(r['Revit']).strip()} for _, r in df_m_up.dropna().iterrows()]
-                    supabase.table("parameter_mappings").insert(batch).execute()
-                    st.rerun()
+        with st.expander("📤 Import / Export Mappature"):
+            res_m = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
+            df_m_exp = pd.DataFrame(res_m.data)[["db_column_name", "revit_parameter_name"]] if res_m.data else pd.DataFrame(columns=["Database", "Revit"])
+            buf_m = io.BytesIO()
+            with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
+                df_m_exp.to_excel(writer, index=False)
+            st.download_button("⬇️ Scarica Template", data=buf_m.getvalue(), file_name="mappe.xlsx")
+            up_m = st.file_uploader("Carica Mappe", type=["xlsx"])
+            if up_m and st.button("🚀 Carica"):
+                df_m_up = pd.read_excel(up_m)
+                batch = [{"project_id": project_id, "db_column_name": str(r['Database']).strip(), "revit_parameter_name": str(r['Revit']).strip()} for _, r in df_m_up.dropna().iterrows()]
+                supabase.table("parameter_mappings").insert(batch).execute()
+                st.rerun()
 
-        st.subheader("➕ Aggiungi Singola Mappatura")
+        st.subheader("➕ Aggiungi Mappatura")
         with st.form("single_map"):
             c1, c2 = st.columns(2)
             db_c = c1.text_input("Chiave Database")
             rev_p = c2.text_input("Parametro Revit")
-            if st.form_submit_button("Salva Mappatura"):
+            if st.form_submit_button("Salva"):
                 if db_c and rev_p:
                     supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_c, "revit_parameter_name": rev_p}).execute()
                     st.rerun()
-
+        
         res_map = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
         if res_map.data:
-            st.subheader("📋 Mappature Attive")
             df_m_view = pd.DataFrame(res_map.data)
             df_m_view["Elimina"] = False
-            ed_map = st.data_editor(df_m_view[["id", "db_column_name", "revit_parameter_name", "Elimina"]], column_config={"id": None, "Elimina": st.column_config.CheckboxColumn("🗑️")}, hide_index=True, use_container_width=True)
-            if st.button("Conferma Eliminazione Mappature"):
-                for _, r in ed_map.iterrows():
-                    if r["Elimina"]: supabase.table("parameter_mappings").delete().eq("id", r["id"]).execute()
+            ed_map = st.data_editor(df_m_view[["id", "db_column_name", "revit_parameter_name", "Elimina"]], column_config={"id": None}, hide_index=True)
+            if st.button("Elimina Mappe Selezionate"):
+                for _, r in ed_map[ed_map["Elimina"]].iterrows(): supabase.table("parameter_mappings").delete().eq("id", r["id"]).execute()
                 st.rerun()
 
 # --- 3. PAGINA: GESTIONE PROGETTI ---
 elif menu == "Gestione Progetti":
     st.title("⚙️ Gestione Progetti")
+    st.info("Qui imposti i codici e le password per i tuoi collaboratori.")
     t1, t2 = st.tabs(["➕ Nuovo Progetto", "📝 Modifica / Elimina"])
     
     with t1:
         with st.form("new_prj"):
             cp = st.text_input("Codice Progetto")
             np = st.text_input("Nome Progetto")
-            pw = st.text_input("Imposta Password Progetto", help="Password richiesta ai collaboratori per accedere a questo progetto")
+            pw = st.text_input("Imposta Password Progetto", placeholder="Scrivila qui...")
             if st.form_submit_button("Crea Progetto"):
                 if cp and np and pw:
                     supabase.table("projects").insert({"project_code": cp, "project_name": np, "project_password": pw}).execute()
-                    st.success(f"Progetto {cp} creato con successo!")
+                    st.success(f"Progetto {cp} creato!")
                     st.rerun()
-                else:
-                    st.error("Compila tutti i campi, password inclusa.")
 
     with t2:
         if projects_list:
-            proj_sel = st.selectbox("Seleziona Progetto da gestire:", {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}.keys())
+            proj_sel = st.selectbox("Seleziona Progetto:", {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}.keys())
             target = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}[proj_sel]
             
-            st.subheader("Modifica Proprietà")
-            new_c = st.text_input("Nuovo Codice", value=target['project_code'])
-            new_n = st.text_input("Nuovo Nome", value=target['project_name'])
-            new_p = st.text_input("Cambia Password", value=target.get('project_password', ""))
+            new_c = st.text_input("Modifica Codice", value=target['project_code'])
+            new_n = st.text_input("Modifica Nome", value=target['project_name'])
+            new_p = st.text_input("Modifica Password", value=target.get('project_password', ""))
             
-            col_p1, col_p2 = st.columns(2)
-            if col_p1.button("💾 Salva Modifiche"):
+            c_s, c_d = st.columns(2)
+            if c_s.button("💾 Salva Modifiche"):
                 supabase.table("projects").update({"project_code": new_c, "project_name": new_n, "project_password": new_p}).eq("id", target['id']).execute()
-                st.success("Dati progetto aggiornati!")
+                st.success("Aggiornato!")
                 st.rerun()
-                
-            if col_p2.button("🔥 ELIMINA PROGETTO"):
+            if c_d.button("🔥 ELIMINA"):
                 supabase.table("projects").delete().eq("id", target['id']).execute()
                 st.rerun()
