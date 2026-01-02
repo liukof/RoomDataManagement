@@ -27,17 +27,31 @@ except Exception as e:
 st.sidebar.title("🧭 Menu")
 menu = st.sidebar.radio("Vai a:", ["Locali", "Mappatura Parametri", "Gestione Progetti"])
 
-# --- LOGICA COMUNE PER PROGETTI ---
+# --- LOGICA COMUNE E SICUREZZA ---
 if menu in ["Locali", "Mappatura Parametri"]:
     if not projects_list:
-        st.sidebar.warning("Crea prima un progetto in 'Gestione Progetti'.")
+        st.sidebar.warning("Crea prima un progetto.")
         st.stop()
 
     st.sidebar.divider()
     project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
     selected_label = st.sidebar.selectbox("Progetto attivo:", list(project_options.keys()))
-    project_id = project_options[selected_label]['id']
+    project_data = project_options[selected_label]
+    project_id = project_data['id']
 
+    # --- CONTROLLO PASSWORD ---
+    st.sidebar.subheader("🔒 Accesso Progetto")
+    user_pwd = st.sidebar.text_input("Inserisci Password Progetto", type="password")
+    
+    # Verifica password (se non impostata nel DB, di default permettiamo l'accesso o definiamo una standard)
+    correct_pwd = project_data.get('project_password', "")
+    
+    if user_pwd != correct_pwd:
+        st.title(f"Accesso protetto: {selected_label}")
+        st.warning("Inserisci la password corretta nella barra laterale per visualizzare i dati.")
+        st.stop()
+
+    # --- SE PASSWORD CORRETTA, MOSTRA CONTENUTO ---
     st.title(f"{'📍' if menu == 'Locali' else '🔗'} {menu}")
     st.caption(f"Commessa: **{selected_label}**")
 
@@ -61,7 +75,7 @@ if menu in ["Locali", "Mappatura Parametri"]:
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, index=False)
-                st.download_button("⬇️ Scarica Excel Locali", data=buf.getvalue(), file_name=f"locali_{selected_label}.xlsx")
+                st.download_button("⬇️ Scarica Excel", data=buf.getvalue(), file_name=f"locali_{selected_label}.xlsx")
 
             with c_ex2:
                 st.write("**Importa (Upsert)**")
@@ -118,7 +132,6 @@ if menu in ["Locali", "Mappatura Parametri"]:
 
     # --- 2. PAGINA: MAPPATURA PARAMETRI ---
     elif menu == "Mappatura Parametri":
-        # RIPRISTINATO: Import/Export Mappature
         with st.expander("📥 Import / Export Mappature (Excel)"):
             c_m1, c_m2 = st.columns(2)
             with c_m1:
@@ -143,8 +156,8 @@ if menu in ["Locali", "Mappatura Parametri"]:
         st.subheader("➕ Aggiungi Singola Mappatura")
         with st.form("single_map"):
             c1, c2 = st.columns(2)
-            db_c = c1.text_input("Chiave Database (es. Fire_Rating)")
-            rev_p = c2.text_input("Parametro Revit (es. Fire Rating)")
+            db_c = c1.text_input("Chiave Database")
+            rev_p = c2.text_input("Parametro Revit")
             if st.form_submit_button("Salva Mappatura"):
                 if db_c and rev_p:
                     supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_c, "revit_parameter_name": rev_p}).execute()
@@ -165,24 +178,36 @@ if menu in ["Locali", "Mappatura Parametri"]:
 elif menu == "Gestione Progetti":
     st.title("⚙️ Gestione Progetti")
     t1, t2 = st.tabs(["➕ Nuovo Progetto", "📝 Modifica / Elimina"])
+    
     with t1:
         with st.form("new_prj"):
-            cp = st.text_input("Codice")
-            np = st.text_input("Nome")
+            cp = st.text_input("Codice Progetto")
+            np = st.text_input("Nome Progetto")
+            pw = st.text_input("Imposta Password Progetto", help="Password richiesta ai collaboratori per accedere a questo progetto")
             if st.form_submit_button("Crea Progetto"):
-                if cp and np:
-                    supabase.table("projects").insert({"project_code": cp, "project_name": np}).execute()
+                if cp and np and pw:
+                    supabase.table("projects").insert({"project_code": cp, "project_name": np, "project_password": pw}).execute()
+                    st.success(f"Progetto {cp} creato con successo!")
                     st.rerun()
+                else:
+                    st.error("Compila tutti i campi, password inclusa.")
+
     with t2:
         if projects_list:
-            proj_sel = st.selectbox("Progetto:", {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}.keys())
+            proj_sel = st.selectbox("Seleziona Progetto da gestire:", {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}.keys())
             target = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}[proj_sel]
-            new_c = st.text_input("Codice", value=target['project_code'])
-            new_n = st.text_input("Nome", value=target['project_name'])
+            
+            st.subheader("Modifica Proprietà")
+            new_c = st.text_input("Nuovo Codice", value=target['project_code'])
+            new_n = st.text_input("Nuovo Nome", value=target['project_name'])
+            new_p = st.text_input("Cambia Password", value=target.get('project_password', ""))
+            
             col_p1, col_p2 = st.columns(2)
-            if col_p1.button("💾 Salva Modifiche Nome"):
-                supabase.table("projects").update({"project_code": new_c, "project_name": new_n}).eq("id", target['id']).execute()
+            if col_p1.button("💾 Salva Modifiche"):
+                supabase.table("projects").update({"project_code": new_c, "project_name": new_n, "project_password": new_p}).eq("id", target['id']).execute()
+                st.success("Dati progetto aggiornati!")
                 st.rerun()
+                
             if col_p2.button("🔥 ELIMINA PROGETTO"):
                 supabase.table("projects").delete().eq("id", target['id']).execute()
                 st.rerun()
