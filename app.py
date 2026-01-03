@@ -24,11 +24,11 @@ if "user_data" not in st.session_state:
     st.session_state["user_data"] = None
 
 if st.session_state["user_data"] is None:
-    st.title("🏗️ BIM Data Manager - Login")
+    st.title("🏗️ MICA - Login")
     st.markdown("### Accesso con Email Aziendale")
     
     with st.form("login_form"):
-        email_input = st.text_input("Indirizzo Email", placeholder="esempio@gmail.com").lower().strip()
+        email_input = st.text_input("Indirizzo Email", placeholder="example@gmail.com").lower().strip()
         submit_login = st.form_submit_button("Accedi", use_container_width=True, type="primary")
     
     if submit_login:
@@ -39,7 +39,7 @@ if st.session_state["user_data"] is None:
                 st.success(f"Benvenuto {email_input}!")
                 st.rerun()
             else:
-                st.error("🚫 Utente non registrato")
+                st.error("🚫 Unknown User")
                 st.info(f"L'email **{email_input}** non è autorizzata. Contatta l'amministratore.")
         else:
             st.warning("⚠️ Inserisci un indirizzo email.")
@@ -63,26 +63,26 @@ except Exception as e:
     st.stop()
 
 # --- 4. SIDEBAR ---
-st.sidebar.title("🏗️ BIM Manager")
+st.sidebar.title("🏗️ MICA")
 st.sidebar.write(f"👤 **{current_user['email']}**")
 if is_admin: st.sidebar.info("Profilo: AMMINISTRATORE")
 
 menu_opt = ["📍 Locali", "🔗 Parameter Mapping"]
-if is_admin: menu_opt.append("⚙️ Gestione Sistema")
+if is_admin: menu_opt.append("⚙️ Settings")
 
 menu = st.sidebar.radio("Vai a:", menu_opt)
 
-if st.sidebar.button("🚪 Esci"):
+if st.sidebar.button("🚪 Exit"):
     st.session_state["user_data"] = None
     st.rerun()
 
 # --- 5. PAGINA: LOCALI ---
-if menu == "📍 Locali":
+if menu == "📍 Rooms":
     if not projects_list:
-        st.warning("Non hai progetti assegnati. Contatta l'amministratore.")
+        st.warning("No projects found. Please, contact support.")
     else:
         project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
-        selected_label = st.selectbox("Seleziona Progetto:", list(project_options.keys()))
+        selected_label = st.selectbox("Select Project:", list(project_options.keys()))
         project_id = project_options[selected_label]['id']
 
         # Carica mappature parametri per questo progetto
@@ -92,7 +92,7 @@ if menu == "📍 Locali":
         with st.expander("📥 Import / Export / Reset Locali"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.write("**Esporta**")
+                st.write("**Export**")
                 rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
                 export_data = []
                 for r in rooms_raw.data:
@@ -104,12 +104,12 @@ if menu == "📍 Locali":
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, index=False)
-                st.download_button("⬇️ Scarica Excel", data=buf.getvalue(), file_name=f"locali_{project_id}.xlsx")
+                st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name=f"locali_{project_id}.xlsx")
             
             with c2:
-                st.write("**Importa (Upsert)**")
-                up_rooms = st.file_uploader("Carica Excel", type=["xlsx"], key="up_loc")
-                if up_rooms and st.button("🚀 Sincronizza"):
+                st.write("**Import (Upsert)**")
+                up_rooms = st.file_uploader("Load Excel", type=["xlsx"], key="up_loc")
+                if up_rooms and st.button("🚀 Sinchronize"):
                     df_up = pd.read_excel(up_rooms)
                     for _, row in df_up.iterrows():
                         r_num = str(row.get("room_number", "")).strip()
@@ -119,12 +119,12 @@ if menu == "📍 Locali":
                             payload = {"project_id": project_id, "room_number": r_num, "room_name_planned": str(row.get("room_name_planned", "")), "parameters": p_save}
                             if exist.data: supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
                             else: supabase.table("rooms").insert(payload).execute()
-                    st.success("Dati sincronizzati!")
+                    st.success("Data updated!")
                     st.rerun()
             
             with c3:
                 st.write("**Reset**")
-                if st.button("🗑️ SVUOTA TUTTI I LOCALI", type="secondary"):
+                if st.button("🗑️ REMOVE", type="secondary"):
                     supabase.table("rooms").delete().eq("project_id", project_id).execute()
                     st.rerun()
 
@@ -141,7 +141,7 @@ if menu == "📍 Locali":
             df_rooms = pd.DataFrame(flat_data)
             df_rooms["Delete"] = False
             
-            st.subheader("📝 Editor Dati")
+            st.subheader("📝 Manage Data")
             edited_df = st.data_editor(
                 df_rooms, 
                 column_config={
@@ -176,7 +176,7 @@ if menu == "📍 Locali":
 # --- 6. PAGINA: MAPPATURA PARAMETRI (Parameter Mapping) ---
 elif menu == "🔗 Parameter Mapping":
     project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
-    selected_label = st.selectbox("Seleziona Progetto:", list(project_options.keys()))
+    selected_label = st.selectbox("Select Project:", list(project_options.keys()))
     project_id = project_options[selected_label]['id']
 
     st.subheader("Mapping to Revit")
@@ -190,7 +190,7 @@ elif menu == "🔗 Parameter Mapping":
             buf_m = io.BytesIO()
             with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
                 df_m_exp.to_excel(writer, index=False)
-            st.download_button("⬇️ Scarica Mappature", data=buf_m.getvalue(), file_name="mappe_parametri.xlsx")
+            st.download_button("⬇️ Download", data=buf_m.getvalue(), file_name="mappe_parametri.xlsx")
         with cm2:
             up_m = st.file_uploader("Carica Excel Mappe", type=["xlsx"], key="up_map")
             if up_m and st.button("🚀 Carica Mappature"):
@@ -205,7 +205,7 @@ elif menu == "🔗 Parameter Mapping":
         c1, c2 = st.columns(2)
         db_v = c1.text_input("Name Database (es. Finitura_Pavimento)")
         rv_v = c2.text_input("Name Parameter Revit (es. Pavimento_Codice)")
-        if st.form_submit_button("Aggiungi"):
+        if st.form_submit_button("Add"):
             if db_v and rv_v:
                 supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_v, "revit_parameter_name": rv_v}).execute()
                 st.rerun()
@@ -255,9 +255,9 @@ elif menu == "⚙️ Gestione Sistema" and is_admin:
     with t2:
         st.subheader("Autorizza Nuovo Utente")
         with st.form("new_user"):
-            em = st.text_input("Email Utente").lower().strip()
-            ad = st.checkbox("Amministratore")
-            if st.form_submit_button("Aggiungi a Whitelist"):
+            em = st.text_input("User").lower().strip()
+            ad = st.checkbox("Admin")
+            if st.form_submit_button("Add to Whitelist"):
                 if em:
                     supabase.table("user_permissions").insert({"email": em, "is_admin": ad, "allowed_projects": []}).execute()
                     st.rerun()
@@ -267,12 +267,12 @@ elif menu == "⚙️ Gestione Sistema" and is_admin:
             st.table(pd.DataFrame(all_u)[["email", "is_admin"]])
 
     with t3:
-        st.subheader("Assegnazione Progetti ai Collaboratori")
+        st.subheader("Assign Project")
         all_u_list = supabase.table("user_permissions").select("*").eq("is_admin", False).execute().data
         all_p_list = supabase.table("projects").select("*").execute().data
         
         if all_u_list and all_p_list:
-            target = st.selectbox("Seleziona Utente:", [u['email'] for u in all_u_list])
+            target = st.selectbox("Select User:", [u['email'] for u in all_u_list])
             u_data = next(u for u in all_u_list if u['email'] == target)
             
             p_map = {f"{p['project_code']}": p['id'] for p in all_p_list}
@@ -281,9 +281,10 @@ elif menu == "⚙️ Gestione Sistema" and is_admin:
             
             new_sel = st.multiselect("Progetti Autorizzati:", list(p_map.keys()), default=current_codes)
             
-            if st.button("💾 Aggiorna Accessi"):
+            if st.button("💾 Save Access"):
                 new_ids = [p_map[c] for c in new_sel]
                 supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target).execute()
                 st.success(f"Accessi aggiornati per {target}")
                 st.rerun()
+
 
