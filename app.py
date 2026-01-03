@@ -32,7 +32,7 @@ if "user_data" not in st.session_state:
                 st.rerun()
             else:
                 st.error("🚫 Utente non registrato")
-                st.info(f"L'email **{email_input}** non è presente nella whitelist. Contatta l'amministratore per richiedere l'accesso.")
+                st.info(f"L'email **{email_input}** non è presente nella whitelist. Contatta l'amministratore.")
         else:
             st.warning("⚠️ Inserisci un indirizzo email.")
     st.stop()
@@ -46,7 +46,6 @@ allowed_project_ids = current_user.get("allowed_projects") or []
 try:
     query = supabase.table("projects").select("*").order("project_code")
     if not is_admin:
-        # Se non admin, filtra solo per i progetti autorizzati (UUID validi)
         query = query.in_("id", allowed_project_ids if allowed_project_ids else ['00000000-0000-0000-0000-000000000000'])
     projects_list = query.execute().data
 except Exception as e:
@@ -76,7 +75,6 @@ if menu == "📍 Locali":
         selected_label = st.selectbox("Seleziona Progetto:", list(project_options.keys()))
         project_id = project_options[selected_label]['id']
 
-        # Recupero mappature
         maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
         mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
@@ -115,7 +113,7 @@ if menu == "📍 Locali":
             
             with c3:
                 st.write("**Reset**")
-                if st.button("🗑️ SVUOTA TUTTI I LOCALI"):
+                if st.button("🗑️ SVUOTA TUTTI I LOCALI", type="secondary"):
                     supabase.table("rooms").delete().eq("project_id", project_id).execute()
                     st.rerun()
 
@@ -128,9 +126,22 @@ if menu == "📍 Locali":
                 p_json = r.get("parameters") or {}
                 for p in mapped_params: row[p] = p_json.get(p, "")
                 flat_data.append(row)
+            
             df_rooms = pd.DataFrame(flat_data)
             df_rooms["Elimina"] = False
-            edited_df = st.data_editor(df_rooms, column_config={"id": None, "room_number": st.column_config.TextColumn("Numero", disabled=True)}, use_container_width=True, hide_index=True)
+            
+            st.subheader("📝 Editor Dati")
+            edited_df = st.data_editor(
+                df_rooms, 
+                column_config={
+                    "id": None, 
+                    "room_number": st.column_config.TextColumn("Numero", disabled=True),
+                    "Elimina": st.column_config.CheckboxColumn("Sel.")
+                }, 
+                use_container_width=True, 
+                hide_index=True,
+                key="editor_locali"
+            )
             
             col_b1, col_b2 = st.columns(2)
             if col_b1.button("💾 SALVA MODIFICHE", use_container_width=True, type="primary"):
@@ -138,10 +149,18 @@ if menu == "📍 Locali":
                     up_p = {p: row[p] for p in mapped_params if p in row}
                     supabase.table("rooms").update({"room_name_planned": row["room_name_planned"], "parameters": up_p}).eq("id", row["id"]).execute()
                 st.rerun()
-            if col_b2.button("🗑️ ELIMINA SELEZIONATI", use_container_width=True):
-                for _, r in edited_df[edited_df["Elimina"]].iterrows():
-                    supabase.table("rooms").delete().eq("id", r["id"]).execute()
-                st.rerun()
+                
+            if col_b2.button("🗑️ ELIMINA RIGHE SELEZIONATE", use_container_width=True):
+                rows_to_del = edited_df[edited_df["Elimina"] == True]
+                if not rows_to_del.empty:
+                    for _, r in rows_to_del.iterrows():
+                        supabase.table("rooms").delete().eq("id", r["id"]).execute()
+                    st.success(f"Eliminati {len(rows_to_del)} locali.")
+                    st.rerun()
+                else:
+                    st.warning("Seleziona almeno una riga tramite la colonna 'Sel.'")
+        else:
+            st.info("Nessun locale trovato.")
 
 # --- 6. PAGINA: MAPPATURA PARAMETRI ---
 elif menu == "🔗 Mappatura Parametri":
@@ -161,26 +180,30 @@ elif menu == "🔗 Mappatura Parametri":
             st.download_button("⬇️ Scarica Template", data=buf_m.getvalue(), file_name="mappe.xlsx")
         with cm2:
             up_m = st.file_uploader("Carica Excel Mappe", type=["xlsx"])
-            if up_m and st.button("🚀 Carica"):
+            if up_m and st.button("🚀 Carica Mappature"):
                 df_m_up = pd.read_excel(up_m)
                 batch = [{"project_id": project_id, "db_column_name": str(r['Database']).strip(), "revit_parameter_name": str(r['Revit']).strip()} for _, r in df_m_up.dropna().iterrows()]
                 supabase.table("parameter_mappings").insert(batch).execute()
                 st.rerun()
 
-    with st.form("add_map"):
+    st.subheader("➕ Aggiungi Singola Mappa")
+    with st.form("single_map_form"):
         c1, c2 = st.columns(2)
-        if st.form_submit_button("➕ Aggiungi Singola Mappa"):
-            if c1.text_input("Chiave DB") and c2.text_input("Parametro Revit"):
-                supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": c1.text_input("Chiave DB"), "revit_parameter_name": c2.text_input("Parametro Revit")}).execute()
+        db_val = c1.text_input("Chiave Database")
+        rv_val = c2.text_input("Parametro Revit")
+        if st.form_submit_button("Salva Mappatura"):
+            if db_val and rv_val:
+                supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_val, "revit_parameter_name": rv_val}).execute()
                 st.rerun()
 
     res_map = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
     if res_map.data:
         df_m = pd.DataFrame(res_map.data)
         df_m["Elimina"] = False
-        ed_m = st.data_editor(df_m[["id", "db_column_name", "revit_parameter_name", "Elimina"]], column_config={"id": None}, use_container_width=True, hide_index=True)
-        if st.button("Rimuovi Mappe Selezionate"):
-            for _, r in ed_m[ed_m["Elimina"]].iterrows():
+        ed_m = st.data_editor(df_m[["id", "db_column_name", "revit_parameter_name", "Elimina"]], column_config={"id": None}, use_container_width=True, hide_index=True, key="editor_mappe")
+        if st.button("🗑️ Rimuovi Mappe Selezionate"):
+            m_to_del = ed_m[ed_m["Elimina"] == True]
+            for _, r in m_to_del.iterrows():
                 supabase.table("parameter_mappings").delete().eq("id", r["id"]).execute()
             st.rerun()
 
@@ -190,31 +213,32 @@ elif menu == "⚙️ Gestione Sistema" and is_admin:
     t1, t2, t3 = st.tabs(["🏗️ Progetti", "👥 Utenti", "🔗 Accessi"])
 
     with t1:
-        with st.form("new_p"):
-            cp = st.text_input("Codice")
-            np = st.text_input("Nome")
+        with st.form("new_p_admin"):
+            cp = st.text_input("Codice Commessa")
+            np = st.text_input("Nome Progetto")
             if st.form_submit_button("Crea Progetto"):
                 supabase.table("projects").insert({"project_code": cp, "project_name": np}).execute()
                 st.rerun()
         
-        st.subheader("Gestione Progetti")
-        all_p_admin = supabase.table("projects").select("*").order("project_code").execute().data
-        if all_p_admin:
-            df_p_edit = pd.DataFrame(all_p_admin)[["id", "project_code", "project_name"]]
-            df_p_edit["Elimina"] = False
-            ed_p = st.data_editor(df_p_edit, column_config={"id": None}, use_container_width=True, hide_index=True)
-            col_p1, col_p2 = st.columns(2)
-            if col_p1.button("💾 SALVA NOMI"):
+        st.subheader("Gestione Progetti Esistenti")
+        all_p = supabase.table("projects").select("*").order("project_code").execute().data
+        if all_p:
+            df_p = pd.DataFrame(all_p)[["id", "project_code", "project_name"]]
+            df_p["Elimina"] = False
+            ed_p = st.data_editor(df_p, column_config={"id": None}, use_container_width=True, hide_index=True, key="editor_progetti")
+            
+            cp1, cp2 = st.columns(2)
+            if cp1.button("💾 Salva Nomi Progetti"):
                 for _, r in ed_p.iterrows():
                     supabase.table("projects").update({"project_code": r["project_code"], "project_name": r["project_name"]}).eq("id", r["id"]).execute()
                 st.rerun()
-            if col_p2.button("🔥 ELIMINA SELEZIONATI"):
-                for _, r in ed_p[ed_p["Elimina"]].iterrows():
+            if cp2.button("🔥 Elimina Progetti Selezionati"):
+                for _, r in ed_p[ed_p["Elimina"] == True].iterrows():
                     supabase.table("projects").delete().eq("id", r["id"]).execute()
                 st.rerun()
 
     with t2:
-        with st.form("new_u"):
+        with st.form("new_u_admin"):
             em = st.text_input("Email").lower().strip()
             ad = st.checkbox("Admin")
             if st.form_submit_button("Autorizza Utente"):
@@ -225,20 +249,19 @@ elif menu == "⚙️ Gestione Sistema" and is_admin:
             st.table(pd.DataFrame(all_u)[["email", "is_admin"]])
 
     with t3:
-        all_users = supabase.table("user_permissions").select("*").eq("is_admin", False).execute().data
-        all_projects = supabase.table("projects").select("*").execute().data
-        if all_users and all_projects:
-            target = st.selectbox("Seleziona Utente:", [u['email'] for u in all_users])
-            u_data = next(u for u in all_users if u['email'] == target)
-            p_map = {f"{p['project_code']}": p['id'] for p in all_projects}
+        all_u_list = supabase.table("user_permissions").select("*").eq("is_admin", False).execute().data
+        all_p_list = supabase.table("projects").select("*").execute().data
+        if all_u_list and all_p_list:
+            target_em = st.selectbox("Utente:", [u['email'] for u in all_u_list])
+            u_data = next(u for u in all_u_list if u['email'] == target_em)
+            p_map = {f"{p['project_code']}": p['id'] for p in all_p_list}
             
-            # Fix UUID Array
             current_ids = u_data.get('allowed_projects') or []
-            current_codes = [p['project_code'] for p in all_projects if p['id'] in current_ids]
+            current_codes = [p['project_code'] for p in all_p_list if p['id'] in current_ids]
             
             new_sel = st.multiselect("Assegna Progetti:", list(p_map.keys()), default=current_codes)
             if st.button("Aggiorna Accessi"):
                 new_ids = [p_map[c] for c in new_sel]
-                supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target).execute()
+                supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target_em).execute()
                 st.success("Accessi aggiornati!")
                 st.rerun()
