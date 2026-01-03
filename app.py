@@ -180,7 +180,7 @@ elif menu == "🔗 Parameter Mapping":
     selected_label = st.selectbox("Select Project:", list(project_options.keys()))
     project_id = project_options[selected_label]['id']
 
-    st.subheader("Revit Parameter Configuration")
+    st.subheader("Mappping")
     
     with st.expander("📥 Import / Export Mappings"):
         cm1, cm2 = st.columns(2)
@@ -297,3 +297,4 @@ elif menu == "⚙️ System Management" and is_admin:
                 supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target).execute()
                 st.success(f"Access updated for {target}!")
                 st.rerun()
+
