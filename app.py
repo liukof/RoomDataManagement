@@ -186,8 +186,8 @@ elif menu == "🔗 Parameter Mapping":
         cm1, cm2 = st.columns(2)
         with cm1:
             res_m = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute()
-            df_m_exp = pd.DataFrame(res_m.data)[["db_column_name", "revit_parameter_name"]] if res_m.data else pd.DataFrame(columns=["DB_Key", "Revit_Parameter"])
-            df_m_exp.columns = ["DB_Key", "Revit_Parameter"]
+            df_m_exp = pd.DataFrame(res_m.data)[["db_column_name", "revit_parameter_name"]] if res_m.data else pd.DataFrame(columns=["Database Parameter", "Revit Parameter"])
+            df_m_exp.columns = ["Database Parameter", "Revit Parameter"]
             buf_m = io.BytesIO()
             with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
                 df_m_exp.to_excel(writer, index=False)
@@ -196,8 +196,8 @@ elif menu == "🔗 Parameter Mapping":
             up_m = st.file_uploader("Upload Mappings Excel", type=["xlsx"], key="up_map")
             if up_m and st.button("🚀 Upload Mappings"):
                 df_m_up = pd.read_excel(up_m)
-                # Ensure the columns match the template names
-                batch = [{"project_id": project_id, "db_column_name": str(r['DB_Key']).strip(), "revit_parameter_name": str(r['Revit_Parameter']).strip()} for _, r in df_m_up.dropna().iterrows()]
+                # Ensure the columns match the updated template names
+                batch = [{"project_id": project_id, "db_column_name": str(r['Database Parameter']).strip(), "revit_parameter_name": str(r['Revit Parameter']).strip()} for _, r in df_m_up.dropna().iterrows()]
                 if batch:
                     supabase.table("parameter_mappings").insert(batch).execute()
                     st.rerun()
@@ -205,8 +205,8 @@ elif menu == "🔗 Parameter Mapping":
     with st.form("single_map"):
         st.write("**Add Single Mapping**")
         c1, c2 = st.columns(2)
-        db_v = c1.text_input("DB Key (e.g. Wall_Finish)")
-        rv_v = c2.text_input("Revit Parameter Name (e.g. Revit_Wall_Finish)")
+        db_v = c1.text_input("Database Parameter (e.g. Wall_Finish)")
+        rv_v = c2.text_input("Revit Parameter (e.g. Wall Finish)")
         if st.form_submit_button("Add Mapping"):
             if db_v and rv_v:
                 supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_v, "revit_parameter_name": rv_v}).execute()
@@ -216,7 +216,15 @@ elif menu == "🔗 Parameter Mapping":
     if res_map.data:
         df_m = pd.DataFrame(res_map.data)
         df_m["Delete"] = False
-        ed_m = st.data_editor(df_m[["id", "db_column_name", "revit_parameter_name", "Delete"]], column_config={"id": None}, use_container_width=True, hide_index=True, key="ed_map")
+        ed_m = st.data_editor(
+            df_m[["id", "db_column_name", "revit_parameter_name", "Delete"]], 
+            column_config={
+                "id": None,
+                "db_column_name": "Database Parameter",
+                "revit_parameter_name": "Revit Parameter"
+            }, 
+            use_container_width=True, hide_index=True, key="ed_map"
+        )
         if st.button("🗑️ Remove Selected Mappings"):
             for _, r in ed_m[ed_m["Delete"] == True].iterrows():
                 supabase.table("parameter_mappings").delete().eq("id", r["id"]).execute()
@@ -285,7 +293,7 @@ elif menu == "⚙️ System Management" and is_admin:
             new_sel = st.multiselect("Authorized Projects:", list(p_map.keys()), default=current_codes)
             
             if st.button("💾 Update Access Rights"):
-                new_ids = [p_map[c] for c in new_sel]
+                new_ids = [p_map[code] for code in new_sel]
                 supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target).execute()
                 st.success(f"Access updated for {target}!")
                 st.rerun()
