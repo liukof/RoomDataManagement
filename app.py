@@ -69,9 +69,11 @@ if menu == "📍 Rooms":
         selected_label = st.selectbox("Select Project:", list(project_options.keys()))
         project_id = project_options[selected_label]['id']
 
+        # Get parameter mappings
         maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
         mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
+        # --- MANUAL ADD SECTION ---
         with st.expander("➕ Add Single Room Manually"):
             with st.form("manual_room"):
                 c1, c2 = st.columns(2)
@@ -80,10 +82,16 @@ if menu == "📍 Rooms":
                 if st.form_submit_button("Add Room"):
                     if new_num:
                         payload = {"project_id": project_id, "room_number": new_num, "room_name_planned": new_name}
-                        supabase.table("rooms").upsert(payload, on_conflict="project_id,room_number").execute()
-                        st.success(f"Room {new_num} added/updated.")
+                        # Manual Check for manual add too
+                        exist = supabase.table("rooms").select("id").eq("project_id", project_id).eq("room_number", new_num).execute()
+                        if exist.data:
+                            supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
+                        else:
+                            supabase.table("rooms").insert(payload).execute()
+                        st.success(f"Room {new_num} updated.")
                         st.rerun()
 
+        # --- IMPORT / EXPORT SECTION ---
         with st.expander("📥 Import / Export / Reset Rooms"):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -104,7 +112,7 @@ if menu == "📍 Rooms":
                 st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name=f"rooms_{project_id}.xlsx")
             
             with c2:
-                st.write("**Import (Preserve Format 01, 02)**")
+                st.write("**Import (Safe Sync)**")
                 up_rooms = st.file_uploader("Upload Excel", type=["xlsx"], key="up_rooms")
                 if up_rooms and st.button("🚀 Sync to Database"):
                     df_up = pd.read_excel(up_rooms, dtype=str)
@@ -126,7 +134,12 @@ if menu == "📍 Rooms":
                                 "room_name_planned": str(row.get("Room Name", "")).strip(), 
                                 "parameters": p_save
                             }
-                            supabase.table("rooms").upsert(payload, on_conflict="project_id,room_number").execute()
+                            # SAFE SYNC LOGIC (NO UPSERT ERROR)
+                            exist = supabase.table("rooms").select("id").eq("project_id", project_id).eq("room_number", r_num).execute()
+                            if exist.data:
+                                supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
+                            else:
+                                supabase.table("rooms").insert(payload).execute()
                     st.success("Database updated successfully!")
                     st.rerun()
 
@@ -136,6 +149,7 @@ if menu == "📍 Rooms":
                     supabase.table("rooms").delete().eq("project_id", project_id).execute()
                     st.rerun()
 
+        # --- DATA EDITOR ---
         st.divider()
         rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
         if rooms_resp.data:
@@ -222,25 +236,18 @@ elif menu == "⚙️ System Management" and is_admin:
             
     with t3:
         st.subheader("Assign Projects to Users")
-        # Fetch non-admin users and all projects
         all_users_resp = supabase.table("user_permissions").select("*").eq("is_admin", False).execute()
         all_projects_resp = supabase.table("projects").select("*").order("project_code").execute()
         
         if all_users_resp.data and all_projects_resp.data:
             user_emails = [u['email'] for u in all_users_resp.data]
-            u_target_email = st.selectbox("Select User to Modify:", user_emails)
-            
-            # Find selected user object
+            u_target_email = st.selectbox("Select User:", user_emails)
             selected_user = next(u for u in all_users_resp.data if u['email'] == u_target_email)
             
-            # Create project mapping
             proj_mapping = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in all_projects_resp.data}
-            
-            # Identify currently allowed project IDs and find their labels
             current_allowed_ids = selected_user.get('allowed_projects') or []
             current_labels = [label for label, p_id in proj_mapping.items() if p_id in current_allowed_ids]
             
-            # Multi-select UI
             new_selection_labels = st.multiselect("Assign Projects:", list(proj_mapping.keys()), default=current_labels)
             
             if st.button("💾 Save Access Rights"):
@@ -248,5 +255,3 @@ elif menu == "⚙️ System Management" and is_admin:
                 supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("id", selected_user['id']).execute()
                 st.success(f"Access updated for {u_target_email}!")
                 st.rerun()
-        else:
-            st.info("Ensure you have at least one project and one non-admin user created.")
