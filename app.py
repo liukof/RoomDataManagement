@@ -87,40 +87,67 @@ if menu == "📍 Rooms":
         selected_label = st.selectbox("Select Project:", list(project_options.keys()))
         project_id = project_options[selected_label]['id']
 
+        # Get parameter mappings for this project
         maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
         mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
+        # --- MANUAL ADD SECTION ---
+        with st.expander("➕ Add Single Room Manually"):
+            with st.form("manual_room"):
+                c1, c2 = st.columns(2)
+                new_num = c1.text_input("Room Number")
+                new_name = c2.text_input("Room Name (Planned)")
+                if st.form_submit_button("Add Room"):
+                    if new_num:
+                        # Anti-duplication check
+                        check = supabase.table("rooms").select("id").eq("project_id", project_id).eq("room_number", new_num).execute()
+                        payload = {"project_id": project_id, "room_number": new_num, "room_name_planned": new_name}
+                        if check.data:
+                            supabase.table("rooms").update(payload).eq("id", check.data[0]['id']).execute()
+                            st.info(f"Room {new_num} updated.")
+                        else:
+                            supabase.table("rooms").insert(payload).execute()
+                            st.success(f"Room {new_num} added.")
+                        st.rerun()
+
+        # --- IMPORT / EXPORT SECTION ---
         with st.expander("📥 Import / Export / Reset Rooms"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.write("**Export**")
+                st.write("**Export Template/Data**")
                 rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
                 export_data = []
                 for r in rooms_raw.data:
-                    row = {"room_number": r["room_number"], "room_name_planned": r["room_name_planned"]}
+                    row = {"Room Number": r["room_number"], "Room Name": r["room_name_planned"]}
                     p_json = r.get("parameters") or {}
                     for p in mapped_params: row[p] = p_json.get(p, "")
                     export_data.append(row)
-                df_export = pd.DataFrame(export_data)
+                
+                # Force headers even if database is empty
+                df_export = pd.DataFrame(export_data) if export_data else pd.DataFrame(columns=["Room Number", "Room Name"] + mapped_params)
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, index=False)
-                st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name=f"rooms_{project_id}.xlsx")
+                st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name=f"rooms_{selected_label}.xlsx")
             
             with c2:
-                st.write("**Import (Upsert)**")
+                st.write("**Import (Auto-Update)**")
                 up_rooms = st.file_uploader("Upload Excel", type=["xlsx"], key="up_loc")
                 if up_rooms and st.button("🚀 Sync Data"):
                     df_up = pd.read_excel(up_rooms)
                     for _, row in df_up.iterrows():
-                        r_num = str(row.get("room_number", "")).strip()
+                        r_num = str(row.get("Room Number", "")).strip()
                         if r_num and r_num != "nan":
+                            # Dynamic parameters from columns
                             p_save = {p: str(row[p]) for p in mapped_params if p in row and pd.notna(row[p])}
+                            # UPSERT logic (Update if exists, else Insert)
                             exist = supabase.table("rooms").select("id").eq("project_id", project_id).eq("room_number", r_num).execute()
-                            payload = {"project_id": project_id, "room_number": r_num, "room_name_planned": str(row.get("room_name_planned", "")), "parameters": p_save}
-                            if exist.data: supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
-                            else: supabase.table("rooms").insert(payload).execute()
-                    st.success("Data synchronized!")
+                            payload = {"project_id": project_id, "room_number": r_num, "room_name_planned": str(row.get("Room Name", "")), "parameters": p_save}
+                            if exist.data:
+                                supabase.table("rooms").update(payload).eq("id", exist.data[0]["id"]).execute()
+                            else:
+                                supabase.table("rooms").insert(payload).execute()
+                    st.success("Synchronization successful! No duplicates created.")
                     st.rerun()
             
             with c3:
@@ -130,11 +157,12 @@ if menu == "📍 Rooms":
                     st.rerun()
 
         st.divider()
+        # --- DATA EDITOR ---
         rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
         if rooms_resp.data:
             flat_data = []
             for r in rooms_resp.data:
-                row = {"id": r["id"], "room_number": r["room_number"], "room_name_planned": r["room_name_planned"]}
+                row = {"id": r["id"], "Room Number": r["room_number"], "Room Name": r["room_name_planned"]}
                 p_json = r.get("parameters") or {}
                 for p in mapped_params: row[p] = p_json.get(p, "")
                 flat_data.append(row)
@@ -147,7 +175,7 @@ if menu == "📍 Rooms":
                 df_rooms, 
                 column_config={
                     "id": None, 
-                    "room_number": st.column_config.TextColumn("Number", disabled=True),
+                    "Room Number": st.column_config.TextColumn("Number", disabled=True),
                     "Delete": st.column_config.CheckboxColumn("Sel.")
                 }, 
                 use_container_width=True, 
@@ -159,7 +187,7 @@ if menu == "📍 Rooms":
             if col_b1.button("💾 SAVE CHANGES", use_container_width=True, type="primary"):
                 for _, row in edited_df.iterrows():
                     up_p = {p: row[p] for p in mapped_params if p in row}
-                    supabase.table("rooms").update({"room_name_planned": row["room_name_planned"], "parameters": up_p}).eq("id", row["id"]).execute()
+                    supabase.table("rooms").update({"room_name_planned": row["Room Name"], "parameters": up_p}).eq("id", row["id"]).execute()
                 st.success("Changes saved!")
                 st.rerun()
                 
@@ -180,7 +208,7 @@ elif menu == "🔗 Parameter Mapping":
     selected_label = st.selectbox("Select Project:", list(project_options.keys()))
     project_id = project_options[selected_label]['id']
 
-    st.subheader("Mappping")
+    st.subheader("Revit Parameter Configuration")
     
     with st.expander("📥 Import / Export Mappings"):
         cm1, cm2 = st.columns(2)
@@ -191,12 +219,11 @@ elif menu == "🔗 Parameter Mapping":
             buf_m = io.BytesIO()
             with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
                 df_m_exp.to_excel(writer, index=False)
-            st.download_button("⬇️ Download Template", data=buf_m.getvalue(), file_name="parameter_mapping_template.xlsx")
+            st.download_button("⬇️ Download Template", data=buf_m.getvalue(), file_name="parameter_mapping.xlsx")
         with cm2:
-            up_m = st.file_uploader("Upload Mappings Excel", type=["xlsx"], key="up_map")
-            if up_m and st.button("🚀 Upload Mappings"):
+            up_m = st.file_uploader("Upload Mappings", type=["xlsx"], key="up_map")
+            if up_m and st.button("🚀 Upload"):
                 df_m_up = pd.read_excel(up_m)
-                # Ensure the columns match the updated template names
                 batch = [{"project_id": project_id, "db_column_name": str(r['Database Parameter']).strip(), "revit_parameter_name": str(r['Revit Parameter']).strip()} for _, r in df_m_up.dropna().iterrows()]
                 if batch:
                     supabase.table("parameter_mappings").insert(batch).execute()
@@ -297,4 +324,3 @@ elif menu == "⚙️ System Management" and is_admin:
                 supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", target).execute()
                 st.success(f"Access updated for {target}!")
                 st.rerun()
-
