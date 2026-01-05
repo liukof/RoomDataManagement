@@ -42,7 +42,6 @@ allowed_ids = current_user.get("allowed_projects") or []
 # --- 3. PROJECT SELECTION ---
 query = supabase.table("projects").select("*").order("project_code")
 if not is_admin:
-    # Gestione fallback per ID intero
     query = query.in_("id", allowed_ids if allowed_ids else [0])
 projects_list = query.execute().data
 
@@ -61,7 +60,6 @@ if not projects_list:
 
 project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
 selected_label = st.selectbox("Current Project Context:", list(project_options.keys()))
-# Forziamo l'ID progetto a INT nativo
 project_id = int(project_options[selected_label]['id'])
 
 # --- 5. PAGE: ROOMS & ITEM LISTS ---
@@ -72,14 +70,14 @@ if menu == "📍 Rooms & Item Lists":
     with st.expander("📥 Bulk Import / Export / Reset Rooms"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.write("**Export**")
+            st.write("**Export Rooms**")
             rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
             if rooms_raw.data:
                 df_exp = pd.DataFrame([{"Number": r["room_number"], "Name": r["room_name_planned"], **(r.get("parameters") or {})} for r in rooms_raw.data])
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df_exp.to_excel(writer, index=False)
-                st.download_button("⬇️ Download Rooms Excel", data=buf.getvalue(), file_name="rooms_export.xlsx")
+                st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name="rooms_export.xlsx")
         with c2:
             st.write("**Import (Bulk Sync)**")
             up_file = st.file_uploader("Upload Rooms XLSX", type=["xlsx"])
@@ -96,13 +94,13 @@ if menu == "📍 Rooms & Item Lists":
                 st.rerun()
         with c3:
             st.write("**Danger Zone**")
-            if st.button("🗑️ DELETE ALL PROJECT ROOMS"):
+            if st.button("🗑️ DELETE ALL ROOMS"):
                 supabase.table("rooms").delete().eq("project_id", project_id).execute()
                 st.rerun()
 
     st.divider()
     cf1, cf2 = st.columns([2, 1])
-    search_q = cf1.text_input("🔍 Search Room Number/Name")
+    search_q = cf1.text_input("🔍 Filter Rooms (Number, Name, or Params)", placeholder="e.g. degenza")
     group_by = cf2.selectbox("📂 Group By:", ["None"] + mapped_params)
     
     rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
@@ -115,74 +113,78 @@ if menu == "📍 Rooms & Item Lists":
             flat_data.append(row)
         df = pd.DataFrame(flat_data)
         
+        # Logica di Filtro dinamico su tutte le colonne
         if search_q:
-            df = df[df['Number'].str.contains(search_q, case=False) | df['Name'].str.contains(search_q, case=False)]
+            mask = df.apply(lambda x: x.astype(str).str.contains(search_q, case=False).any(), axis=1)
+            df_filtered = df[mask]
+        else:
+            df_filtered = df
 
-        st.write("### 📍 Project Rooms List")
-        # Mostriamo la tabella
-        st.dataframe(df, use_container_width=True, hide_index=True, column_config={"id": None})
+        st.write(f"### 📍 Project Rooms List ({len(df_filtered)} filtered)")
+        st.dataframe(df_filtered, use_container_width=True, hide_index=True, column_config={"id": None})
 
-        if group_by != "None":
-            st.divider()
-            st.write(f"### 📁 Grouped by {group_by}")
-            for g_name, g_df in df.groupby(group_by):
-                with st.expander(f"📁 {g_name} ({len(g_df)} rooms)"):
-                    st.dataframe(g_df, use_container_width=True, hide_index=True)
-        
+        # --- SEZIONE BULK ITEM ADD (dRofus Style) ---
         st.divider()
-        sel_room_num = st.selectbox("Select Room to manage Equipment:", df['Number'].tolist())
-        # FIX: Conversione esplicita in int nativo Python per evitare errore JSON
-        room_id = int(df[df['Number'] == sel_room_num]['id'].values[0])
+        st.subheader("📦 Bulk Equipment Assignment")
+        st.warning(f"Warning: Actions below will apply to ALL {len(df_filtered)} rooms currently filtered.")
         
-        st.subheader(f"📦 Equipment List: Room {sel_room_num}")
-        items_in_room = supabase.table("room_items").select("id, quantity, items(item_code, item_description)").eq("room_id", room_id).execute()
-        
-        if items_in_room.data:
-            item_rows = [{"Code": ri["items"]["item_code"], "Description": ri["items"]["item_description"], "Qty": ri["quantity"], "id": int(ri["id"])} for ri in items_in_room.data]
-            item_df = pd.DataFrame(item_rows)
-            item_df["Delete"] = False
-            ed_items = st.data_editor(item_df, use_container_width=True, hide_index=True, key="item_list_ed", column_config={"id": None})
-            
-            if st.button("🗑️ Remove Selected Items"):
-                for _, r in ed_items[ed_items["Delete"] == True].iterrows():
-                    # FIX: int(r["id"])
-                    supabase.table("room_items").delete().eq("id", int(r["id"])).execute()
-                st.rerun()
-
         catalog = supabase.table("items").select("*").eq("project_id", project_id).execute().data
         if catalog:
             item_opt = {f"{i['item_code']} - {i['item_description']}": int(i['id']) for i in catalog}
-            ci1, ci2 = st.columns([3, 1])
-            t_item_label = ci1.selectbox("Add Item to this Room:", list(item_opt.keys()))
-            t_qty = ci2.number_input("Quantity", min_value=1, value=1)
             
-            if st.button("➕ Add Item"):
-                # FIX: l'ID viene dal dizionario item_opt dove abbiamo già forzato int()
-                supabase.table("room_items").insert({
-                    "room_id": room_id, 
-                    "item_id": item_opt[t_item_label], 
-                    "quantity": int(t_qty)
-                }).execute()
-                st.rerun()
+            with st.form("bulk_item_form"):
+                col_i1, col_i2 = st.columns([3, 1])
+                t_item_label = col_i1.selectbox("Select Item to add to filtered set:", list(item_opt.keys()))
+                t_qty = col_i2.number_input("Quantity per Room", min_value=1, value=1)
+                
+                if st.form_submit_button("🚀 Add to All Filtered Rooms", use_container_width=True):
+                    bulk_insert = []
+                    item_id = item_opt[t_item_label]
+                    for r_id in df_filtered['id'].tolist():
+                        bulk_insert.append({
+                            "room_id": int(r_id),
+                            "item_id": item_id,
+                            "quantity": int(t_qty)
+                        })
+                    if bulk_insert:
+                        supabase.table("room_items").insert(bulk_insert).execute()
+                        st.success(f"Successfully added {t_item_label} to {len(df_filtered)} rooms!")
+                        st.rerun()
+
+        # --- GESTIONE SINGOLA ---
+        with st.expander("🔍 Manage Individual Room Equipment"):
+            sel_room_num = st.selectbox("Select room for detail view:", df_filtered['Number'].tolist())
+            room_id = int(df_filtered[df_filtered['Number'] == sel_room_num]['id'].values[0])
+            
+            items_in_room = supabase.table("room_items").select("id, quantity, items(item_code, item_description)").eq("room_id", room_id).execute()
+            if items_in_room.data:
+                item_rows = [{"Code": ri["items"]["item_code"], "Description": ri["items"]["item_description"], "Qty": ri["quantity"], "id": int(ri["id"])} for ri in items_in_room.data]
+                item_df = pd.DataFrame(item_rows)
+                item_df["Delete"] = False
+                ed_items = st.data_editor(item_df, use_container_width=True, hide_index=True, key="item_list_ed", column_config={"id": None})
+                
+                if st.button("🗑️ Remove Selected Items"):
+                    for _, r in ed_items[ed_items["Delete"] == True].iterrows():
+                        supabase.table("room_items").delete().eq("id", int(r["id"])).execute()
+                    st.rerun()
 
 # --- 6. PAGE: ITEM CATALOG ---
 elif menu == "📦 Item Catalog":
     st.header("📦 Item Catalog Management")
-    with st.expander("➕ Add Single Item to Catalog"):
+    with st.expander("➕ Add Single Item"):
         with st.form("new_item"):
             i_c = st.text_input("Item Code")
             i_d = st.text_input("Description")
             if st.form_submit_button("Save Item"):
-                if i_c:
-                    supabase.table("items").insert({"project_id": project_id, "item_code": i_c, "item_description": i_d}).execute()
-                    st.rerun()
+                supabase.table("items").insert({"project_id": project_id, "item_code": i_c, "item_description": i_d}).execute()
+                st.rerun()
 
     items_data = supabase.table("items").select("*").eq("project_id", project_id).execute().data
     if items_data:
         df_items = pd.DataFrame(items_data).drop(columns=['project_id'])
         df_items["Delete"] = False
         ed_catalog = st.data_editor(df_items, use_container_width=True, hide_index=True, key="cat_ed", column_config={"id": None})
-        if st.button("🗑️ Delete Selected Items from Catalog"):
+        if st.button("🗑️ Delete Selected from Catalog"):
             for _, r in ed_catalog[ed_catalog["Delete"] == True].iterrows():
                 supabase.table("items").delete().eq("id", int(r["id"])).execute()
             st.rerun()
@@ -192,8 +194,8 @@ elif menu == "🔗 Parameter Mapping":
     st.header("🔗 Parameter Mapping")
     with st.form("map_f"):
         c1, c2 = st.columns(2)
-        db_p = c1.text_input("DB Param")
-        rv_p = c2.text_input("Revit Param")
+        db_p = c1.text_input("DB Param Name")
+        rv_p = c2.text_input("Revit Param Name")
         if st.form_submit_button("Add Mapping"):
             supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_p, "revit_parameter_name": rv_p}).execute()
             st.rerun()
@@ -214,13 +216,13 @@ elif menu == "⚙️ System Management" and is_admin:
     t1, t2 = st.tabs(["🏗️ Projects", "👥 Users"])
     with t1:
         with st.form("p_f"):
-            p_c = st.text_input("Project Code")
-            p_n = st.text_input("Project Name")
-            if st.form_submit_button("Create Project"):
+            p_c = st.text_input("Code")
+            p_n = st.text_input("Name")
+            if st.form_submit_button("Create"):
                 supabase.table("projects").insert({"project_code": p_c, "project_name": p_n}).execute()
                 st.rerun()
     with t2:
         u_m = st.text_input("User Email")
-        if st.button("Authorize User"):
+        if st.button("Authorize"):
             supabase.table("user_permissions").insert({"email": u_m.lower(), "is_admin": False}).execute()
             st.rerun()
