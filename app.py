@@ -42,6 +42,7 @@ allowed_ids = current_user.get("allowed_projects") or []
 # --- 3. PROJECT SELECTION ---
 query = supabase.table("projects").select("*").order("project_code")
 if not is_admin:
+    # Gestione fallback per ID intero
     query = query.in_("id", allowed_ids if allowed_ids else [0])
 projects_list = query.execute().data
 
@@ -60,11 +61,11 @@ if not projects_list:
 
 project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
 selected_label = st.selectbox("Current Project Context:", list(project_options.keys()))
-project_id = project_options[selected_label]['id']
+# Forziamo l'ID progetto a INT nativo
+project_id = int(project_options[selected_label]['id'])
 
 # --- 5. PAGE: ROOMS & ITEM LISTS ---
 if menu == "📍 Rooms & Item Lists":
-    # Recupero mappature
     maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
     mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
@@ -108,7 +109,7 @@ if menu == "📍 Rooms & Item Lists":
     if rooms_resp.data:
         flat_data = []
         for r in rooms_resp.data:
-            row = {"id": r["id"], "Number": r["room_number"], "Name": r["room_name_planned"]}
+            row = {"id": int(r["id"]), "Number": r["room_number"], "Name": r["room_name_planned"]}
             p_json = r.get("parameters") or {}
             for p in mapped_params: row[p] = p_json.get(p, "")
             flat_data.append(row)
@@ -117,46 +118,51 @@ if menu == "📍 Rooms & Item Lists":
         if search_q:
             df = df[df['Number'].str.contains(search_q, case=False) | df['Name'].str.contains(search_q, case=False)]
 
-        # --- TABELLA LOCALI (RIPRISTINATA) ---
         st.write("### 📍 Project Rooms List")
-        df["Manage Items"] = False
-        edited_rooms = st.data_editor(df, use_container_width=True, hide_index=True, key="room_editor", column_config={"id": None})
+        # Mostriamo la tabella
+        st.dataframe(df, use_container_width=True, hide_index=True, column_config={"id": None})
 
-        # --- LOGICA ITEM LIST (SIMIL dROFUS) ---
         if group_by != "None":
             st.divider()
             st.write(f"### 📁 Grouped by {group_by}")
             for g_name, g_df in df.groupby(group_by):
                 with st.expander(f"📁 {g_name} ({len(g_df)} rooms)"):
-                    st.dataframe(g_df.drop(columns=["Manage Items"]), use_container_width=True, hide_index=True)
+                    st.dataframe(g_df, use_container_width=True, hide_index=True)
         
-        # Gestione Item List per la stanza selezionata (se marcata nel data_editor o via selectbox)
         st.divider()
         sel_room_num = st.selectbox("Select Room to manage Equipment:", df['Number'].tolist())
-        room_id = df[df['Number'] == sel_room_num]['id'].values[0]
+        # FIX: Conversione esplicita in int nativo Python per evitare errore JSON
+        room_id = int(df[df['Number'] == sel_room_num]['id'].values[0])
         
         st.subheader(f"📦 Equipment List: Room {sel_room_num}")
         items_in_room = supabase.table("room_items").select("id, quantity, items(item_code, item_description)").eq("room_id", room_id).execute()
         
         if items_in_room.data:
-            item_rows = [{"Code": ri["items"]["item_code"], "Description": ri["items"]["item_description"], "Qty": ri["quantity"], "id": ri["id"]} for ri in items_in_room.data]
+            item_rows = [{"Code": ri["items"]["item_code"], "Description": ri["items"]["item_description"], "Qty": ri["quantity"], "id": int(ri["id"])} for ri in items_in_room.data]
             item_df = pd.DataFrame(item_rows)
             item_df["Delete"] = False
             ed_items = st.data_editor(item_df, use_container_width=True, hide_index=True, key="item_list_ed", column_config={"id": None})
             
             if st.button("🗑️ Remove Selected Items"):
                 for _, r in ed_items[ed_items["Delete"] == True].iterrows():
-                    supabase.table("room_items").delete().eq("id", r["id"]).execute()
+                    # FIX: int(r["id"])
+                    supabase.table("room_items").delete().eq("id", int(r["id"])).execute()
                 st.rerun()
 
         catalog = supabase.table("items").select("*").eq("project_id", project_id).execute().data
         if catalog:
-            item_opt = {f"{i['item_code']} - {i['item_description']}": i['id'] for i in catalog}
+            item_opt = {f"{i['item_code']} - {i['item_description']}": int(i['id']) for i in catalog}
             ci1, ci2 = st.columns([3, 1])
-            t_item = ci1.selectbox("Add Item to this Room:", list(item_opt.keys()))
+            t_item_label = ci1.selectbox("Add Item to this Room:", list(item_opt.keys()))
             t_qty = ci2.number_input("Quantity", min_value=1, value=1)
+            
             if st.button("➕ Add Item"):
-                supabase.table("room_items").insert({"room_id": room_id, "item_id": item_opt[t_item], "quantity": t_qty}).execute()
+                # FIX: l'ID viene dal dizionario item_opt dove abbiamo già forzato int()
+                supabase.table("room_items").insert({
+                    "room_id": room_id, 
+                    "item_id": item_opt[t_item_label], 
+                    "quantity": int(t_qty)
+                }).execute()
                 st.rerun()
 
 # --- 6. PAGE: ITEM CATALOG ---
@@ -167,8 +173,9 @@ elif menu == "📦 Item Catalog":
             i_c = st.text_input("Item Code")
             i_d = st.text_input("Description")
             if st.form_submit_button("Save Item"):
-                supabase.table("items").insert({"project_id": project_id, "item_code": i_c, "item_description": i_d}).execute()
-                st.rerun()
+                if i_c:
+                    supabase.table("items").insert({"project_id": project_id, "item_code": i_c, "item_description": i_d}).execute()
+                    st.rerun()
 
     items_data = supabase.table("items").select("*").eq("project_id", project_id).execute().data
     if items_data:
@@ -177,7 +184,7 @@ elif menu == "📦 Item Catalog":
         ed_catalog = st.data_editor(df_items, use_container_width=True, hide_index=True, key="cat_ed", column_config={"id": None})
         if st.button("🗑️ Delete Selected Items from Catalog"):
             for _, r in ed_catalog[ed_catalog["Delete"] == True].iterrows():
-                supabase.table("items").delete().eq("id", r["id"]).execute()
+                supabase.table("items").delete().eq("id", int(r["id"])).execute()
             st.rerun()
 
 # --- 7. PAGE: PARAMETER MAPPING ---
@@ -198,7 +205,7 @@ elif menu == "🔗 Parameter Mapping":
         ed_maps = st.data_editor(df_maps, use_container_width=True, hide_index=True, key="map_ed", column_config={"id": None})
         if st.button("🗑️ Delete Selected Mappings"):
             for _, r in ed_maps[ed_maps["Delete"] == True].iterrows():
-                supabase.table("parameter_mappings").delete().eq("id", r["id"]).execute()
+                supabase.table("parameter_mappings").delete().eq("id", int(r["id"])).execute()
             st.rerun()
 
 # --- 8. PAGE: SYSTEM MANAGEMENT ---
