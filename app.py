@@ -176,8 +176,8 @@ elif menu == "🔗 Parameter Mapping":
                     supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_v, "revit_parameter_name": rv_v}).execute()
                     st.rerun()
 
-    with st.expander("📥 Export / Reset Mappings"):
-        c1, c2 = st.columns(2)
+    with st.expander("📥 Import / Export / Reset Mappings"):
+        c1, c2, c3 = st.columns(3)
         with c1:
             st.write("**Export Mappings**")
             maps_raw = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute().data
@@ -187,7 +187,29 @@ elif menu == "🔗 Parameter Mapping":
                 with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
                     df_maps_exp.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Mapping Excel", data=buf_m.getvalue(), file_name=f"mappings_{project_id}.xlsx")
+        
         with c2:
+            st.write("**Import Mappings (Bulk)**")
+            up_maps = st.file_uploader("Upload Mapping Excel", type=["xlsx"], key="up_maps")
+            if up_maps and st.button("🚀 Upload Mappings"):
+                df_m_up = pd.read_excel(up_maps, dtype=str)
+                m_bulk = []
+                for _, row in df_m_up.iterrows():
+                    db_col = str(row.get("db_column_name", "")).strip()
+                    rv_param = str(row.get("revit_parameter_name", "")).strip()
+                    if db_col and rv_param:
+                        m_bulk.append({
+                            "project_id": project_id,
+                            "db_column_name": db_col,
+                            "revit_parameter_name": rv_param
+                        })
+                if m_bulk:
+                    # Usiamo upsert per evitare duplicati se i nomi sono uguali
+                    supabase.table("parameter_mappings").upsert(m_bulk, on_conflict="project_id,db_column_name").execute()
+                    st.success("Mappings Updated!")
+                    st.rerun()
+
+        with c3:
             st.write("**Danger Zone**")
             if st.button("🗑️ RESET ALL MAPPINGS"):
                 supabase.table("parameter_mappings").delete().eq("project_id", project_id).execute()
