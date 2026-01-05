@@ -79,8 +79,8 @@ if menu == "📍 Rooms & Item Lists":
                     df_exp.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name="rooms_export.xlsx")
         with c2:
-            st.write("**Import (Bulk Sync)**")
-            up_file = st.file_uploader("Upload Rooms XLSX", type=["xlsx"])
+            st.write("**Import Rooms (Bulk Sync)**")
+            up_file = st.file_uploader("Upload Rooms XLSX", type=["xlsx"], key="up_rooms")
             if up_file and st.button("🚀 Sync Rooms"):
                 df_up = pd.read_excel(up_file, dtype=str)
                 bulk_data = []
@@ -94,7 +94,7 @@ if menu == "📍 Rooms & Item Lists":
                 st.rerun()
         with c3:
             st.write("**Danger Zone**")
-            if st.button("🗑️ DELETE ALL ROOMS"):
+            if st.button("🗑️ DELETE ALL PROJECT ROOMS"):
                 supabase.table("rooms").delete().eq("project_id", project_id).execute()
                 st.rerun()
 
@@ -113,20 +113,19 @@ if menu == "📍 Rooms & Item Lists":
             flat_data.append(row)
         df = pd.DataFrame(flat_data)
         
-        # Logica di Filtro dinamico su tutte le colonne
         if search_q:
             mask = df.apply(lambda x: x.astype(str).str.contains(search_q, case=False).any(), axis=1)
             df_filtered = df[mask]
         else:
             df_filtered = df
 
-        st.write(f"### 📍 Project Rooms List ({len(df_filtered)} filtered)")
+        st.write(f"### 📍 Filtered Rooms List ({len(df_filtered)} rooms)")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True, column_config={"id": None})
 
         # --- SEZIONE BULK ITEM ADD (dRofus Style) ---
         st.divider()
         st.subheader("📦 Bulk Equipment Assignment")
-        st.warning(f"Warning: Actions below will apply to ALL {len(df_filtered)} rooms currently filtered.")
+        st.warning(f"Warning: Actions below will apply to ALL {len(df_filtered)} filtered rooms.")
         
         catalog = supabase.table("items").select("*").eq("project_id", project_id).execute().data
         if catalog:
@@ -141,32 +140,11 @@ if menu == "📍 Rooms & Item Lists":
                     bulk_insert = []
                     item_id = item_opt[t_item_label]
                     for r_id in df_filtered['id'].tolist():
-                        bulk_insert.append({
-                            "room_id": int(r_id),
-                            "item_id": item_id,
-                            "quantity": int(t_qty)
-                        })
+                        bulk_insert.append({"room_id": int(r_id), "item_id": item_id, "quantity": int(t_qty)})
                     if bulk_insert:
                         supabase.table("room_items").insert(bulk_insert).execute()
-                        st.success(f"Successfully added {t_item_label} to {len(df_filtered)} rooms!")
+                        st.success(f"Successfully added to {len(df_filtered)} rooms!")
                         st.rerun()
-
-        # --- GESTIONE SINGOLA ---
-        with st.expander("🔍 Manage Individual Room Equipment"):
-            sel_room_num = st.selectbox("Select room for detail view:", df_filtered['Number'].tolist())
-            room_id = int(df_filtered[df_filtered['Number'] == sel_room_num]['id'].values[0])
-            
-            items_in_room = supabase.table("room_items").select("id, quantity, items(item_code, item_description)").eq("room_id", room_id).execute()
-            if items_in_room.data:
-                item_rows = [{"Code": ri["items"]["item_code"], "Description": ri["items"]["item_description"], "Qty": ri["quantity"], "id": int(ri["id"])} for ri in items_in_room.data]
-                item_df = pd.DataFrame(item_rows)
-                item_df["Delete"] = False
-                ed_items = st.data_editor(item_df, use_container_width=True, hide_index=True, key="item_list_ed", column_config={"id": None})
-                
-                if st.button("🗑️ Remove Selected Items"):
-                    for _, r in ed_items[ed_items["Delete"] == True].iterrows():
-                        supabase.table("room_items").delete().eq("id", int(r["id"])).execute()
-                    st.rerun()
 
 # --- 6. PAGE: ITEM CATALOG ---
 elif menu == "📦 Item Catalog":
@@ -189,14 +167,47 @@ elif menu == "📦 Item Catalog":
                 supabase.table("items").delete().eq("id", int(r["id"])).execute()
             st.rerun()
 
-# --- 7. PAGE: PARAMETER MAPPING ---
+# --- 7. PAGE: PARAMETER MAPPING (RIPRISTINATO IMPORT/EXPORT) ---
 elif menu == "🔗 Parameter Mapping":
     st.header("🔗 Parameter Mapping")
+    
+    with st.expander("📥 Bulk Import / Export / Reset Mappings"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.write("**Export Mappings**")
+            maps_raw = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute().data
+            if maps_raw:
+                df_maps_exp = pd.DataFrame(maps_raw)[["db_column_name", "revit_parameter_name"]]
+                buf_m = io.BytesIO()
+                with pd.ExcelWriter(buf_m, engine='xlsxwriter') as writer:
+                    df_maps_exp.to_excel(writer, index=False)
+                st.download_button("⬇️ Download Mapping Excel", data=buf_m.getvalue(), file_name="mappings_export.xlsx")
+        with c2:
+            st.write("**Import Mappings (Bulk)**")
+            up_maps = st.file_uploader("Upload Mapping XLSX", type=["xlsx"], key="up_maps")
+            if up_maps and st.button("🚀 Upload Mappings"):
+                df_m_up = pd.read_excel(up_maps, dtype=str)
+                m_bulk = []
+                for _, row in df_m_up.iterrows():
+                    db_col = str(row.get("db_column_name", "")).strip()
+                    rv_param = str(row.get("revit_parameter_name", "")).strip()
+                    if db_col and rv_param:
+                        m_bulk.append({"project_id": project_id, "db_column_name": db_col, "revit_parameter_name": rv_param})
+                if m_bulk:
+                    supabase.table("parameter_mappings").upsert(m_bulk, on_conflict="project_id,db_column_name").execute()
+                    st.success("Mappings Updated!")
+                    st.rerun()
+        with c3:
+            st.write("**Danger Zone**")
+            if st.button("🗑️ RESET ALL MAPPINGS"):
+                supabase.table("parameter_mappings").delete().eq("project_id", project_id).execute()
+                st.rerun()
+
     with st.form("map_f"):
         c1, c2 = st.columns(2)
-        db_p = c1.text_input("DB Param Name")
-        rv_p = c2.text_input("Revit Param Name")
-        if st.form_submit_button("Add Mapping"):
+        db_p = c1.text_input("New DB Param")
+        rv_p = c2.text_input("New Revit Param")
+        if st.form_submit_button("Add Single Mapping"):
             supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_p, "revit_parameter_name": rv_p}).execute()
             st.rerun()
             
