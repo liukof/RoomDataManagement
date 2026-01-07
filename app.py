@@ -68,10 +68,10 @@ if menu == "📍 Rooms & Item Lists":
     maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
     mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
-    with st.expander("📥 Import / Export / Delete Rooms"):
-        c1, c2, c3 = st.columns(3)
+    with st.expander("📥 Import / Export Rooms"):
+        c1, c2 = st.columns(2)
         with c1:
-            st.write("**Export**")
+            st.write("**Export Rooms**")
             rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
             if rooms_raw.data:
                 df_exp = pd.DataFrame([{"Number": r["room_number"], "Name": r["room_name_planned"], **(r.get("parameters") or {})} for r in rooms_raw.data])
@@ -79,17 +79,13 @@ if menu == "📍 Rooms & Item Lists":
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: df_exp.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name="rooms_export.xlsx")
         with c2:
-            st.write("**Import**")
+            st.write("**Import Rooms**")
             up_file = st.file_uploader("Upload XLSX", type=["xlsx"], key="up_rooms")
             if up_file and st.button("🚀 Sync Rooms"):
                 df_up = pd.read_excel(up_file, dtype=str)
                 bulk_data = [{"project_id": project_id, "room_number": str(row["Number"]).strip(), "room_name_planned": str(row["Name"]), "parameters": {p: row[p] for p in mapped_params if p in row and pd.notna(row[p])}} for _, row in df_up.iterrows()]
                 supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
                 st.success("Rooms Updated!"); st.rerun()
-        with c3:
-            st.write("**Danger Zone**")
-            if st.button("⚠️ DELETE ALL PROJECT ROOMS", type="primary", use_container_width=True):
-                supabase.table("rooms").delete().eq("project_id", project_id).execute(); st.rerun()
 
     st.divider()
     cf1, cf2 = st.columns([2, 1])
@@ -107,17 +103,21 @@ if menu == "📍 Rooms & Item Lists":
         
         mask = df.apply(lambda x: x.astype(str).str.contains(search_q, case=False).any(), axis=1) if search_q else [True]*len(df)
         df_filtered = df[mask].copy()
-        df_filtered["Select"] = False
+        df_filtered.insert(0, "Select", False)
 
         st.write(f"### 📍 Rooms List ({len(df_filtered)})")
-        # Editor per selezione/cancellazione selettiva
         ed_rooms = st.data_editor(df_filtered, use_container_width=True, hide_index=True, column_config={"id": None})
         
-        if st.button("🗑️ DELETE SELECTED ROOMS"):
+        # PULSANTI AFFIANCATI
+        col_del1, col_del2 = st.columns(2)
+        if col_del1.button("🗑️ DELETE SELECTED ROOMS", use_container_width=True):
             ids_to_del = ed_rooms[ed_rooms["Select"] == True]["id"].tolist()
             if ids_to_del:
-                supabase.table("rooms").delete().in_("id", ids_to_del).execute()
+                supabase.table("rooms").delete().in_("id", [int(i) for i in ids_to_del]).execute()
                 st.rerun()
+
+        if col_del2.button("⚠️ DELETE ALL PROJECT ROOMS", type="primary", use_container_width=True):
+            supabase.table("rooms").delete().eq("project_id", project_id).execute(); st.rerun()
 
         # --- BULK ITEM ADD ---
         st.divider()
@@ -133,37 +133,125 @@ if menu == "📍 Rooms & Item Lists":
                     bulk = [{"room_id": int(r_id), "item_id": item_opt[t_item], "quantity": int(t_qty)} for r_id in df_filtered['id'].tolist()]
                     supabase.table("room_items").insert(bulk).execute(); st.rerun()
 
+# --- 6. PAGE: ITEM CATALOG ---
+elif menu == "📦 Item Catalog":
+    if not project_id: st.stop()
+    st.header("📦 Item Catalog Management")
+    
+    with st.expander("➕ Add New Item to Catalog"):
+        with st.form("new_item"):
+            c1, c2 = st.columns(2)
+            i_c = c1.text_input("Item Code")
+            i_d = c2.text_input("Description")
+            if st.form_submit_button("Save Item"):
+                if i_c:
+                    supabase.table("items").insert({"project_id": project_id, "item_code": i_c, "item_description": i_d}).execute()
+                    st.rerun()
+
+    st.divider()
+    search_item = st.text_input("🔍 Filter Catalog Items")
+    items_data = supabase.table("items").select("*").eq("project_id", project_id).execute().data
+    if items_data:
+        df_items = pd.DataFrame(items_data).drop(columns=['project_id'])
+        if search_item:
+            df_items = df_items[df_items.apply(lambda x: x.astype(str).str.contains(search_item, case=False).any(), axis=1)]
+        
+        df_items.insert(0, "Select", False)
+        ed_cat = st.data_editor(df_items, use_container_width=True, hide_index=True, column_config={"id": None})
+        
+        if st.button("🗑️ Delete Selected Items"):
+            ids_cat = ed_cat[ed_cat["Select"] == True]["id"].tolist()
+            if ids_cat:
+                supabase.table("items").delete().in_("id", [int(i) for i in ids_cat]).execute()
+                st.rerun()
+
+# --- 7. PAGE: PARAMETER MAPPING ---
+elif menu == "🔗 Parameter Mapping":
+    if not project_id: st.stop()
+    st.header("🔗 Parameter Mapping")
+    
+    with st.expander("📥 Import / Export Mappings"):
+        c1, c2 = st.columns(2)
+        with c1:
+            maps_raw = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute().data
+            if maps_raw:
+                df_m_exp = pd.DataFrame(maps_raw)[["db_column_name", "revit_parameter_name"]]
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: df_m_exp.to_excel(writer, index=False)
+                st.download_button("⬇️ Download Mapping Excel", data=buf.getvalue(), file_name="mappings.xlsx")
+        with c2:
+            up_m = st.file_uploader("Upload Mappings XLSX", type=["xlsx"])
+            if up_m and st.button("🚀 Upload Mappings"):
+                df_m_up = pd.read_excel(up_m, dtype=str)
+                m_bulk = [{"project_id": project_id, "db_column_name": str(row["db_column_name"]), "revit_parameter_name": str(row["revit_parameter_name"])} for _, row in df_m_up.iterrows()]
+                supabase.table("parameter_mappings").upsert(m_bulk, on_conflict="project_id,db_column_name").execute(); st.rerun()
+
+    with st.form("map_f"):
+        c1, c2 = st.columns(2)
+        db_p, rv_p = c1.text_input("DB Param"), c2.text_input("Revit Param")
+        if st.form_submit_button("Add Single Mapping"):
+            if db_p and rv_p:
+                supabase.table("parameter_mappings").insert({"project_id": project_id, "db_column_name": db_p, "revit_parameter_name": rv_p}).execute()
+                st.rerun()
+            
+    maps = supabase.table("parameter_mappings").select("*").eq("project_id", project_id).execute().data
+    if maps:
+        df_m = pd.DataFrame(maps)[["id", "db_column_name", "revit_parameter_name"]]
+        df_m.insert(0, "Select", False)
+        ed_m = st.data_editor(df_m, use_container_width=True, hide_index=True, column_config={"id": None})
+        if st.button("🗑️ Delete Selected Mappings"):
+            ids_m = ed_m[ed_m["Select"] == True]["id"].tolist()
+            if ids_m:
+                supabase.table("parameter_mappings").delete().in_("id", [int(i) for i in ids_m]).execute(); st.rerun()
+
 # --- 8. PAGE: SYSTEM MANAGEMENT ---
 elif menu == "⚙️ System Management" and is_admin:
     st.header("⚙️ Admin Panel")
     t1, t2 = st.tabs(["🏗️ Projects", "👥 Users"])
     with t1:
         with st.form("new_p"):
-            c1, c2 = st.columns(2)
-            p_c, p_n = c1.text_input("New Project Code"), c2.text_input("New Project Name")
+            p_c, p_n = st.text_input("New Project Code"), st.text_input("New Project Name")
             if st.form_submit_button("Create Project"):
                 supabase.table("projects").insert({"project_code": p_c, "project_name": p_n}).execute(); st.rerun()
-        
         st.divider()
-        st.subheader("Edit or Delete Projects")
         if projects_list:
             df_p = pd.DataFrame(projects_list)[["id", "project_code", "project_name"]]
-            df_p["Delete"] = False
-            # Qui l'utente può rinominare direttamente nelle celle
-            ed_p = st.data_editor(df_p, use_container_width=True, hide_index=True, column_config={"id": None}, key="p_editor")
-            
-            c_save, c_del = st.columns(2)
-            if c_save.button("💾 SAVE CHANGES (RENAME)", use_container_width=True):
-                for index, row in ed_p.iterrows():
+            df_p.insert(0, "Select", False)
+            ed_p = st.data_editor(df_p, use_container_width=True, hide_index=True, column_config={"id": None})
+            col_p1, col_p2 = st.columns(2)
+            if col_p1.button("💾 SAVE CHANGES (RENAME)", use_container_width=True):
+                for _, row in ed_p.iterrows():
                     supabase.table("projects").update({"project_code": row["project_code"], "project_name": row["project_name"]}).eq("id", int(row["id"])).execute()
-                st.success("Projects updated!"); st.rerun()
-                
-            if c_del.button("🗑️ DELETE SELECTED PROJECTS", type="primary", use_container_width=True):
-                for _, r in ed_p[ed_p["Delete"] == True].iterrows():
-                    supabase.table("projects").delete().eq("id", int(r["id"])).execute()
+                st.rerun()
+            if col_p2.button("🗑️ DELETE SELECTED PROJECTS", type="primary", use_container_width=True):
+                ids_p = ed_p[ed_p["Select"] == True]["id"].tolist()
+                for i_p in ids_p: supabase.table("projects").delete().eq("id", int(i_p)).execute()
                 st.rerun()
     with t2:
-        # (Gestione utenti invariata)
-        u_m = st.text_input("User Email")
+        st.subheader("User Management")
+        u_m = st.text_input("Authorize Email")
         if st.button("Authorize"):
             supabase.table("user_permissions").insert({"email": u_m.lower()}).execute(); st.rerun()
+        
+        users = supabase.table("user_permissions").select("*").execute().data
+        if users:
+            df_u = pd.DataFrame(users)
+            df_u.insert(0, "Select", False)
+            # Carica progetti per assegnazione
+            all_p = supabase.table("projects").select("id, project_code").execute().data
+            p_options = {f"{p['project_code']}": p['id'] for p in all_p}
+            
+            st.write("---")
+            u_to_edit = st.selectbox("Select User to Assign Projects:", [u['email'] for u in users])
+            selected_projects = st.multiselect("Select Projects:", list(p_options.keys()))
+            if st.button("💾 Update User Permissions"):
+                new_ids = [p_options[p] for p in selected_projects]
+                supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", u_to_edit).execute()
+                st.success("Permissions updated!")
+            
+            st.write("---")
+            ed_u = st.data_editor(df_u, use_container_width=True, hide_index=True, column_config={"id": None})
+            if st.button("🗑️ Delete Selected Users"):
+                ids_u = ed_u[ed_u["Select"] == True]["id"].tolist()
+                for i_u in ids_u: supabase.table("user_permissions").delete().eq("id", int(i_u)).execute()
+                st.rerun()
