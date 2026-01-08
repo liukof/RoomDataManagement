@@ -144,15 +144,57 @@ if menu == "📍 Rooms & Item Lists":
 elif menu == "📦 Item Catalog":
     if not project_id: st.stop()
     st.header("📦 Item Catalog Management")
-    with st.expander("➕ Add New Item"):
+
+    # --- NUOVA SEZIONE IMPORT / EXPORT EXCEL ---
+    with st.expander("📥 Import / Export Catalog Items"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("**Export Catalog**")
+            items_raw = supabase.table("items").select("*").eq("project_id", project_id).execute()
+            if items_raw.data:
+                # Esportiamo solo le colonne utili
+                df_item_exp = pd.DataFrame(items_raw.data)[["item_code", "item_description"]]
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: 
+                    df_item_exp.to_excel(writer, index=False)
+                st.download_button("⬇️ Download Item Catalog", data=buf.getvalue(), file_name="item_catalog.xlsx")
+            else:
+                st.info("Catalog is empty.")
+        
+        with c2:
+            st.write("**Import/Sync Catalog**")
+            up_item_file = st.file_uploader("Upload Item XLSX", type=["xlsx"], key="up_items")
+            if up_item_file and st.button("🚀 Sync Catalog"):
+                df_item_up = pd.read_excel(up_item_file, dtype=str)
+                # Pulizia e preparazione dati
+                item_bulk = []
+                for _, row in df_item_up.iterrows():
+                    if pd.notna(row.get("item_code")):
+                        item_bulk.append({
+                            "project_id": project_id,
+                            "item_code": str(row["item_code"]).strip(),
+                            "item_description": str(row.get("item_description", ""))
+                        })
+                
+                if item_bulk:
+                    supabase.table("items").upsert(item_bulk, on_conflict="project_id,item_code").execute()
+                    st.success(f"Successfully synced {len(item_bulk)} items!"); st.rerun()
+                else:
+                    st.error("No valid data found in file.")
+
+    # --- AGGIUNTA SINGOLA (già presente) ---
+    with st.expander("➕ Add New Item Manually"):
         with st.form("ni"):
             c1, c2 = st.columns(2)
             ic, ides = c1.text_input("Code"), c2.text_input("Description")
             if st.form_submit_button("Save Item"):
-                if ic: supabase.table("items").insert({"project_id": project_id, "item_code": ic, "item_description": ides}).execute(); st.rerun()
+                if ic: 
+                    supabase.table("items").insert({"project_id": project_id, "item_code": ic, "item_description": ides}).execute()
+                    st.rerun()
 
+    # --- TABELLA E FILTRI (già presente) ---
     st.write("---")
-    si = st.text_input("🔍 Filter Items")
+    si = st.text_input("🔍 Filter Items Table")
     items = supabase.table("items").select("*").eq("project_id", project_id).execute().data
     if items:
         df_i = pd.DataFrame(items).drop(columns=['project_id'])
@@ -248,3 +290,4 @@ elif menu == "⚙️ System Management" and is_admin:
                 for _, r in ed_u[ed_u["Select"] == True].iterrows():
                     supabase.table("user_permissions").delete().eq("email", r["email"]).execute()
                 st.rerun()
+
