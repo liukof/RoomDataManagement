@@ -3,3 +3,4 @@ supabase
 pandas
 xlsxwriter
 openpyxl
+st-gsheets-connection
