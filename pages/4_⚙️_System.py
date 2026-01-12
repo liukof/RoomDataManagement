@@ -32,58 +32,77 @@ st.sidebar.write(f"👤 Admin: **{user['email']}**")
 t1, t2, t3 = st.tabs(["🏗️ Projects Management", "👥 User Permissions", "✏️ Modify Projects"])
 
 # --- TAB 1: CREAZIONE PROGETTI ---
-with t1:
-    st.subheader("Create New Project")
-    with st.form("new_project_form"):
-        c1, c2 = st.columns(2)
-        pc = c1.text_input("Project Code", placeholder="e.g. PRJ-001")
-        pn = c2.text_input("Project Name", placeholder="e.g. New Hospital Wing")
-        if st.form_submit_button("🚀 Create Project", use_container_width=True):
-            if pc and pn:
-                try:
-                    supabase.table("projects").insert({"project_code": pc, "project_name": pn}).execute()
-                    st.success(f"Project {pc} created!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.warning("Please fill all fields.")
+with t2:
+    st.subheader("Authorize New User")
+    with st.form("new_user_form"):
+        c1, c2 = st.columns([2, 1])
+        new_email = c1.text_input("User Email").lower().strip()
+        is_new_admin = c2.checkbox("Grant Admin Privileges")
+        if st.form_submit_button("➕ Authorize User", use_container_width=True):
+            if "@" in new_email:
+                supabase.table("user_permissions").insert({
+                    "email": new_email, 
+                    "is_admin": is_new_admin
+                }).execute()
+                st.success(f"User {new_email} authorized.")
+                st.rerun()
+            else: st.error("Invalid email address.")
 
     st.divider()
-    st.subheader("Existing Projects")
-    all_projects = supabase.table("projects").select("*").order("project_code").execute().data
     
-    if all_projects:
-        dfp = pd.DataFrame(all_projects)[["id", "project_code", "project_name"]]
-        dfp.insert(0, "Select", False)
+    # Recupero dati progetti e utenti
+    all_projects = supabase.table("projects").select("*").order("project_code").execute().data
+    users = supabase.table("user_permissions").select("*").execute().data
+
+    if users and all_projects:
+        st.subheader("Project Assignment")
+        p_map = {f"{p['project_code']}": int(p['id']) for p in all_projects}
+        p_inv_map = {int(p['id']): f"{p['project_code']}" for p in all_projects}
         
-        # Editor per rinominare o selezionare per eliminazione
-        edp = st.data_editor(
-            dfp, 
-            use_container_width=True, 
-            hide_index=True, 
-            column_config={"id": None, "Select": st.column_config.CheckboxColumn("Select")}
-        )
+        u_to_ed = st.selectbox("Select User to edit permissions:", [u['email'] for u in users], key="sel_u_perm")
+        curr_u = next(u for u in users if u['email'] == u_to_ed)
         
-        cs, cd = st.columns(2)
-        if cs.button("💾 Save Renames", use_container_width=True):
-            for _, r in edp.iterrows():
-                supabase.table("projects").update({
-                    "project_code": r["project_code"], 
-                    "project_name": r["project_name"]
-                }).eq("id", int(r["id"])).execute()
-            st.success("Changes saved!")
+        curr_ids = [int(x) for x in (curr_u.get("allowed_projects") or [])]
+        curr_labels = [p_inv_map[pid] for pid in curr_ids if pid in p_inv_map]
+        
+        sel_p = st.multiselect("Allowed Projects for this user:", list(p_map.keys()), default=curr_labels)
+        
+        if st.button("💾 Update User Permissions", use_container_width=True):
+            new_ids = [int(p_map[p]) for p in sel_p]
+            supabase.table("user_permissions").update({"allowed_projects": new_ids}).eq("email", u_to_ed).execute()
+            st.success(f"Permissions updated for {u_to_ed}!")
             st.rerun()
             
-        if cd.button("🗑️ Delete Selected Projects", type="primary", use_container_width=True):
-            selected_ids = [int(r["id"]) for _, r in edp[edp["Select"] == True].iterrows()]
-            if selected_ids:
-                supabase.table("projects").delete().in_("id", selected_ids).execute()
-                st.success(f"Deleted {len(selected_ids)} projects.")
-                st.rerun()
-    else:
-        st.info("No projects found.")
-
+    st.divider()
+    st.subheader("🗑️ Account Management")
+    if users:
+        st.write("Seleziona gli account da rimuovere dal sistema:")
+        df_u = pd.DataFrame(users)[["email", "is_admin"]]
+        df_u.insert(0, "Select", False)
+        
+        ed_u = st.data_editor(
+            df_u, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Select": st.column_config.CheckboxColumn("Elimina", default=False),
+                "email": st.column_config.TextColumn("User Email", disabled=True),
+                "is_admin": st.column_config.CheckboxColumn("Admin", disabled=True)
+            }
+        )
+        
+        if st.button("❌ DELETE SELECTED ACCOUNTS", type="primary", use_container_width=True):
+            emails_to_del = ed_u[ed_u["Select"] == True]["email"].tolist()
+            if emails_to_del:
+                # Protezione: non eliminare se stessi (opzionale ma consigliato)
+                if user['email'] in emails_to_del:
+                    st.error("Non puoi eliminare il tuo stesso account mentre sei loggato.")
+                else:
+                    supabase.table("user_permissions").delete().in_("email", emails_to_del).execute()
+                    st.success(f"Rimosso l'accesso per {len(emails_to_del)} utenti.")
+                    st.rerun()
+            else:
+                st.warning("Seleziona almeno un account.")
 # --- TAB 2: PERMESSI UTENTE ---
 with t2:
     st.subheader("Authorize New User")
