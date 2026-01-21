@@ -5,7 +5,7 @@ from app import supabase
 st.set_page_config(page_title="Project Overview", layout="wide", page_icon="📊")
 
 if not st.session_state.get("user_data"):
-    st.warning("Esegui il login nella Home.")
+    st.warning("⚠️ Esegui il login nella Home.")
     st.stop()
 
 st.title("📊 Riepilogo Commessa BIM")
@@ -13,58 +13,77 @@ st.title("📊 Riepilogo Commessa BIM")
 @st.cache_data(ttl=600)
 def fetch_project_kpis():
     try:
-        # Conteggio reale dalle tue tabelle in Supabase
+        # 1. Recupero conteggi base
         r_rooms = supabase.table("rooms").select("id", count="exact").execute()
         r_items = supabase.table("items").select("id", count="exact").execute()
         r_projs = supabase.table("projects").select("id", count="exact").execute()
         
-        # Recupero dati per calcolo aree (assumendo colonna 'area' in 'rooms')
-        data_rooms = supabase.table("rooms").select("area").execute()
-        df_rooms = pd.DataFrame(data_rooms.data)
+        # 2. Recupero dati per analisi dinamica colonne
+        # Selezioniamo solo 1 riga per vedere i nomi delle colonne ed evitare l'errore 42703
+        sample_room = supabase.table("rooms").select("*").limit(1).execute()
         
-        total_area = 0
-        if not df_rooms.empty and 'area' in df_rooms.columns:
-            total_area = pd.to_numeric(df_rooms['area'], errors='coerce').sum()
+        total_area = 0.0
+        if sample_room.data:
+            df_sample = pd.DataFrame(sample_room.data)
+            # Cerchiamo una colonna che somigli a "area" (case-insensitive)
+            area_col = next((c for c in df_sample.columns if 'area' in c.lower()), None)
+            
+            if area_col:
+                # Se troviamo la colonna, recuperiamo tutti i valori di quella colonna
+                all_areas = supabase.table("rooms").select(area_col).execute()
+                df_areas = pd.DataFrame(all_areas.data)
+                total_area = pd.to_numeric(df_areas[area_col], errors='coerce').sum()
 
         return {
             "rooms": r_rooms.count or 0,
             "items": r_items.count or 0,
             "projects": r_projs.count or 0,
-            "area": total_area
+            "area": total_area,
+            "error": None
         }
     except Exception as e:
-        st.error(f"Errore DB: {e}")
-        return {"rooms": 0, "items": 0, "projects": 0, "area": 0}
+        return {"rooms": 0, "items": 0, "projects": 0, "area": 0, "error": str(e)}
 
 stats = fetch_project_kpis()
 
-# --- INTERFACCIA GRAFICA ---
-st.subheader("Key Performance Indicators")
+if stats["error"]:
+    st.error(f"Dettaglio Errore: {stats['error']}")
+
+# --- UI DASHBOARD ---
 c1, c2, c3, c4 = st.columns(4)
 
 with c1:
-    st.container(border=True).metric("📍 Totale Locali", stats["rooms"])
+    st.metric("📍 Totale Locali", stats["rooms"])
 with c2:
-    st.container(border=True).metric("📦 Oggetti/Items", stats["items"])
+    st.metric("📦 Oggetti/Items", stats["items"])
 with c3:
-    st.container(border=True).metric("📐 Superficie (mq)", f"{stats['area']:,.2f}")
+    st.metric("📐 Superficie Totale", f"{stats['area']:,.2f} m²")
 with c4:
-    st.container(border=True).metric("🏢 Progetti Attivi", stats["projects"])
+    st.metric("🏢 Progetti Attivi", stats["projects"])
 
 st.divider()
 
-# Visualizzazione rapida delle tabelle attive
-st.subheader("🗂️ Struttura Dati Rilevata")
-tabs = st.tabs(["Rooms Data", "Item Catalog", "Project Info"])
+# --- ISPEZIONE DATI ---
+st.subheader("🗂️ Ispezione Tabelle (Anteprima)")
+tab1, tab2, tab3 = st.tabs(["Locali", "Catalogo", "Progetti"])
 
-with tabs[0]:
-    raw_rooms = supabase.table("rooms").select("*").limit(5).execute()
-    st.dataframe(pd.DataFrame(raw_rooms.data), use_container_width=True)
+with tab1:
+    res = supabase.table("rooms").select("*").limit(10).execute()
+    if res.data:
+        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
+    else:
+        st.info("La tabella 'rooms' è vuota.")
 
-with tabs[1]:
-    raw_items = supabase.table("items").select("*").limit(5).execute()
-    st.dataframe(pd.DataFrame(raw_items.data), use_container_width=True)
+with tab2:
+    res = supabase.table("items").select("*").limit(10).execute()
+    if res.data:
+        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
+    else:
+        st.info("La tabella 'items' è vuota.")
 
-with tabs[2]:
-    raw_projects = supabase.table("projects").select("*").limit(5).execute()
-    st.dataframe(pd.DataFrame(raw_projects.data), use_container_width=True)
+with tab3:
+    res = supabase.table("projects").select("*").limit(10).execute()
+    if res.data:
+        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
+    else:
+        st.info("La tabella 'projects' è vuota.")
