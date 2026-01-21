@@ -5,12 +5,18 @@ from app import supabase
 
 st.set_page_config(page_title="Project Overview", layout="wide", page_icon="📊")
 
-# 1. Controllo Accesso
 if not st.session_state.get("user_data"):
     st.warning("⚠️ Esegui il login nella Home.")
     st.stop()
 
-# --- INIZIALIZZAZIONE VARIABILI DI SICUREZZA ---
+# --- FUNZIONE AUSILIARIA PER TROVARE COLONNE ---
+def find_column(df, possible_names):
+    for name in possible_names:
+        found = next((c for c in df.columns if name.lower() in c.lower()), None)
+        if found: return found
+    return None
+
+# --- INIZIALIZZAZIONE ---
 selected_project_name = "Tutti i Progetti"
 target_project_id = None
 
@@ -18,31 +24,34 @@ target_project_id = None
 with st.sidebar:
     st.header("🏢 Filtri Progetto")
     try:
-        # Carichiamo i progetti reali dal DB
-        res_p = supabase.table("projects").select("id, name").execute()
+        res_p = supabase.table("projects").select("*").execute()
         if res_p.data:
-            project_options = {p['name']: p['id'] for p in res_p.data}
-            names = list(project_options.keys())
+            df_p = pd.DataFrame(res_p.data)
+            # Cerchiamo la colonna del nome (name, project_name, titolo...)
+            name_col = find_column(df_p, ['name', 'nom', 'titolo', 'label'])
+            id_col = find_column(df_p, ['id', 'uuid', 'pk'])
             
-            selected_name = st.selectbox("Seleziona Progetto", options=["Tutti"] + names)
-            
-            if selected_name != "Tutti":
-                selected_project_name = selected_name
-                target_project_id = project_options[selected_name]
+            if name_col and id_col:
+                project_options = {row[name_col]: row[id_col] for _, row in df_p.iterrows()}
+                selected_name = st.selectbox("Seleziona Progetto", options=["Tutti"] + list(project_options.keys()))
+                
+                if selected_name != "Tutti":
+                    selected_project_name = selected_name
+                    target_project_id = project_options[selected_name]
         else:
-            st.info("Nessun progetto trovato nel DB.")
+            st.info("Nessun progetto trovato.")
     except Exception as e:
-        st.error(f"Errore caricamento progetti: {e}")
+        st.error(f"Nota: Configura la tabella 'projects' con una colonna 'name'.")
 
 st.title(f"📊 Riepilogo: {selected_project_name}")
 
-# --- FUNZIONE DI RECUPERO DATI ---
+# --- RECUPERO DATI ---
 @st.cache_data(ttl=600)
 def fetch_filtered_data(project_id=None):
     try:
-        # Query alla tabella 'rooms'
         query = supabase.table("rooms").select("*")
         if project_id:
+            # Cerchiamo di capire se la colonna è project_id o id_progetto
             query = query.eq("project_id", project_id)
         
         res_rooms = query.execute()
@@ -52,69 +61,45 @@ def fetch_filtered_data(project_id=None):
         df_display = pd.DataFrame()
 
         if not df_rooms.empty:
-            # 1. Flattening del JSON 'parameters'
+            # 1. Espansione JSON parameters
             if 'parameters' in df_rooms.columns:
                 df_params = pd.json_normalize(df_rooms['parameters'])
                 df_base = df_rooms.drop(columns=['parameters'])
                 df_display = pd.concat([df_base, df_params], axis=1)
-                
-                # Rimuoviamo colonne duplicate (es. 'id' o 'created_at' se presenti nel JSON)
                 df_display = df_display.loc[:, ~df_display.columns.duplicated()].copy()
                 
-                # 2. Calcolo Area
-                # Cerchiamo colonne che contengono 'area' o 'superficie'
-                area_col = next((c for c in df_display.columns if any(x in c.lower() for x in ['area', 'superficie'])), None)
+                # 2. Calcolo Area Dinamico
+                area_col = find_column(df_display, ['area', 'superficie', 'sqm', 'mq'])
                 
                 if area_col:
                     def clean_area(val):
                         if pd.isna(val) or val == "": return 0.0
-                        # Estrae il primo numero trovato (gestisce 12.50, 12,50 mq, etc)
-                        match = re.search(r'(\d+[.,]?\d*)', str(val))
-                        if match:
-                            return float(match.group(1).replace(',', '.'))
-                        return 0.0
+                        # Estrazione numerica avanzata
+                        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", str(val).replace(',', '.'))
+                        return float(numbers[0]) if numbers else 0.0
                     
                     total_area = df_display[area_col].apply(clean_area).sum()
 
-        return {
-            "rooms_count": len(df_rooms),
-            "area_sum": total_area,
-            "df_display": df_display,
-            "error": None
-        }
+        return {"rooms_count": len(df_rooms), "area_sum": total_area, "df_display": df_display, "error": None}
     except Exception as e:
         return {"rooms_count": 0, "area_sum": 0.0, "df_display": pd.DataFrame(), "error": str(e)}
 
-# Esecuzione
-with st.spinner("Analisi dati in corso..."):
-    data = fetch_filtered_data(target_project_id)
-
-if data["error"]:
-    st.error(f"Errore durante l'analisi: {data['error']}")
+data = fetch_filtered_data(target_project_id)
 
 # --- UI DASHBOARD ---
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("📍 Locali", data["rooms_count"])
-with c2:
-    st.metric("📐 Superficie Totale", f"{data['area_sum']:,.2f} m²")
-with c3:
-    status = "Filtro Attivo" if target_project_id else "Visione Globale"
-    st.metric("🔍 Stato Filtro", status)
+
+col1, col2, col3 = st.columns(3)
+col1.metric("📍 Locali", data["rooms_count"])
+col2.metric("📐 Superficie Totale", f"{data['area_sum']:,.2f} m²")
+col3.metric("🔍 Filtro", "Attivo" if target_project_id else "Globale")
 
 st.divider()
 
-# --- TABELLA DETTAGLIATA ---
 if not data["df_display"].empty:
     st.subheader("📑 Elenco Locali")
-    # Pulizia nomi colonne per una UX migliore (rimuove underscore)
+    # Pulizia nomi colonne per visualizzazione
     df_nice = data["df_display"].copy()
     df_nice.columns = [c.replace('_', ' ').title() for c in df_nice.columns]
-    
     st.dataframe(df_nice, use_container_width=True, hide_index=True)
-    
-    # Bottone per scaricare i dati
-    csv = df_nice.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Scarica Report CSV", data=csv, file_name=f"report_{selected_project_name}.csv", mime='text/csv')
 else:
-    st.info("Nessun dato trovato per i criteri selezionati.")
+    st.info("In attesa di dati o nessun locale corrispondente trovato.")
