@@ -8,66 +8,89 @@ if not st.session_state.get("user_data"):
     st.warning("⚠️ Esegui il login nella Home.")
     st.stop()
 
-st.title("📊 Riepilogo Commessa BIM")
+# --- SIDEBAR: SELEZIONE PROGETTO ---
+with st.sidebar:
+    st.header("Filtri Progetto")
+    # Recuperiamo la lista dei progetti per il selettore
+    try:
+        res_p = supabase.table("projects").select("id, name").execute()
+        projects_list = res_p.data if res_p.data else []
+        project_options = {p['name']: p['id'] for p in projects_list}
+        
+        selected_project_name = st.selectbox("Seleziona Progetto", options=["Tutti"] + list(project_options.keys()))
+        target_project_id = project_options.get(selected_project_name)
+    except:
+        st.error("Errore nel caricamento progetti")
+        target_project_id = None
+
+st.title(f"📊 Riepilogo: {selected_project_name}")
 
 @st.cache_data(ttl=600)
-def fetch_and_clean_data():
+def fetch_filtered_data(project_id=None):
     try:
-        # Recupero record
-        res_rooms = supabase.table("rooms").select("*").execute()
-        res_items = supabase.table("items").select("id", count="exact").execute()
-        res_projs = supabase.table("projects").select("id", count="exact").execute()
+        # 1. Query filtrata se è selezionato un progetto specifico
+        query = supabase.table("rooms").select("*")
+        if project_id:
+            query = query.eq("project_id", project_id) # Assicurati che la colonna sia 'project_id'
         
+        res_rooms = query.execute()
         df_rooms = pd.DataFrame(res_rooms.data)
         
         total_area = 0.0
-        
-        if not df_rooms.empty and 'parameters' in df_rooms.columns:
-            # --- LOGICA DI COERENZA VISIVA ---
-            # Espandiamo il campo JSON 'parameters' in colonne separate
-            df_params = pd.json_normalize(df_rooms['parameters'])
-            
-            # Uniamo le colonne originali (id, created_at) con quelle estratte dal JSON
-            df_final = pd.concat([df_rooms.drop(columns=['parameters']), df_params], axis=1)
-            
-            # Cerchiamo l'area dentro i parametri estratti
-            area_col = next((c for c in df_final.columns if 'area' in c.lower()), None)
-            if area_col:
-                # Pulizia stringhe (es. rimuove " m²" se presente) e conversione
-                total_area = pd.to_numeric(
-                    df_final[area_col].astype(str).str.replace(',', '.').str.extract('(\d+\.?\d*)')[0], 
-                    errors='coerce'
-                ).sum()
-        else:
-            df_final = df_rooms
+        df_display = pd.DataFrame()
+
+        if not df_rooms.empty:
+            # --- FIX DUPLICATI E FLATTENING ---
+            if 'parameters' in df_rooms.columns:
+                # Estraiamo i parametri
+                df_params = pd.json_normalize(df_rooms['parameters'])
+                
+                # Rimuoviamo la colonna 'parameters' originale
+                df_base = df_rooms.drop(columns=['parameters'])
+                
+                # Risoluzione nomi duplicati aggiungendo un prefisso ai parametri se necessario
+                # In questo caso, forziamo nomi unici
+                df_display = pd.concat([df_base, df_params], axis=1)
+                df_display = df_display.loc[:, ~df_display.columns.duplicated()].copy()
+                
+                # --- CALCOLO AREA ---
+                area_col = next((c for c in df_display.columns if 'area' in c.lower()), None)
+                if area_col:
+                    # Pulizia e somma
+                    def clean_area(val):
+                        if pd.isna(val) or val == "": return 0
+                        import re
+                        match = re.search(r'(\d+[.,]?\d*)', str(val))
+                        return float(match.group(1).replace(',', '.')) if match else 0
+                    
+                    total_area = df_display[area_col].apply(clean_area).sum()
 
         return {
             "rooms_count": len(df_rooms),
-            "items_count": res_items.count or 0,
-            "projects_count": res_projs.count or 0,
             "area_sum": total_area,
-            "df_display": df_final,
+            "df_display": df_display,
             "error": None
         }
     except Exception as e:
-        return {"rooms_count": 0, "items_count": 0, "projects_count": 0, "area_sum": 0, "df_display": pd.DataFrame(), "error": str(e)}
+        return {"rooms_count": 0, "area_sum": 0, "df_display": pd.DataFrame(), "error": str(e)}
 
-with st.spinner("Sincronizzazione coerente dei dati..."):
-    data = fetch_and_clean_data()
+# Caricamento dati basato sul filtro
+data = fetch_filtered_data(target_project_id)
 
 # --- DASHBOARD KPI ---
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("📍 Locali Totali", data["rooms_count"])
-c2.metric("📦 Oggetti/Items", data["items_count"])
-c3.metric("📐 Superficie Totale", f"{data['area_sum']:,.2f} m²")
-c4.metric("🏢 Progetti Attivi", data["projects_count"])
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("📍 Locali nel Progetto", data["rooms_count"])
+with c2:
+    st.metric("📐 Superficie Totale", f"{data['area_sum']:,.2f} m²")
+with c3:
+    st.metric("📂 ID Progetto", target_project_id if target_project_id else "Global")
 
 st.divider()
 
-# --- VISUALIZZAZIONE COERENTE ---
-st.subheader("📑 Anteprima Dati (Formattazione App)")
+# --- TABELLA COERENTE ---
 if not data["df_display"].empty:
-    # Mostriamo la tabella "pulita" senza il campo JSON grezzo
+    st.subheader("📑 Dati Dettagliati Locali")
     st.dataframe(data["df_display"], use_container_width=True)
 else:
-    st.info("Nessun dato disponibile nelle tabelle selezionate.")
+    st.info("Nessun locale trovato per questo progetto.")
