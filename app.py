@@ -1,103 +1,79 @@
 import streamlit as st
 from supabase import create_client, Client
 
-# --- CONFIGURAZIONE E STILE ---
-st.set_page_config(page_title="BIM Data Manager PRO", layout="wide", page_icon="🏗️")
+# --- CONFIGURAZIONE GLOBALE ---
+st.set_page_config(
+    page_title="BIM Data Manager PRO", 
+    layout="wide", 
+    page_icon="🏗️",
+    initial_sidebar_state="expanded"
+)
 
-# CSS per rendere la UI più moderna (UX Accattivante)
+# --- STILE CSS PERSONALIZZATO (UX ACCATTIVANTE) ---
 st.markdown("""
     <style>
-    /* Gradient per l'header */
-    .main {
-        background: #f8f9fa;
-    }
-    .stButton>button {
-        border-radius: 5px;
-        height: 3em;
-        transition: all 0.3s;
-    }
-    .stButton>button:hover {
-        border-color: #007bff;
-        color: #007bff;
-    }
-    /* Card per i KPI */
-    div[data-testid="stMetricValue"] {
-        font-size: 1.8rem;
-        color: #0e1117;
-    }
+    .stApp { background-color: #fcfcfc; }
+    .stButton>button { border-radius: 8px; font-weight: 600; }
+    div[data-testid="stSidebarNav"] { padding-top: 20px; }
+    .login-header { text-align: center; padding: 2rem; }
     </style>
     """, unsafe_allow_html=True)
 
+# --- INIZIALIZZAZIONE SUPABASE ---
 @st.cache_resource
-def get_client():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def get_supabase_client():
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error("Errore di configurazione: Controlla i Secrets di Supabase.")
+        return None
 
-supabase = get_client()
+supabase = get_supabase_client()
 
-# --- LOGICA DI SESSIONE ---
+# --- GESTIONE SESSIONE ---
 if "user_data" not in st.session_state:
     st.session_state["user_data"] = None
 
-# --- PAGINA DI LOGIN ---
+def logout():
+    st.session_state["user_data"] = None
+    st.rerun()
+
+# --- INTERFACCIA DI LOGIN ---
 if st.session_state["user_data"] is None:
-    left_co, cent_co, last_co = st.columns([1,2,1])
-    with cent_co:
-        st.markdown("<h1 style='text-align: center;'>🏗️</h1>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>BIM Data Manager PRO</h2>", unsafe_allow_html=True)
+    _, center, _ = st.columns([1, 2, 1])
+    with center:
+        st.markdown("<div class='login-header'><h1>🏗️ BIM Data Manager</h1><p>Versione 2.0 - Suite Professionale</p></div>", unsafe_allow_html=True)
         
         with st.container(border=True):
-            email_input = st.text_input("Email Aziendale").lower().strip()
+            email_input = st.text_input("Inserisci la tua Email Aziendale").lower().strip()
             if st.button("Accedi al Sistema", use_container_width=True, type="primary"):
-                res = supabase.table("user_permissions").select("*").eq("email", email_input).execute()
-                if res.data:
-                    st.session_state["user_data"] = res.data[0]
-                    st.rerun()
+                if supabase:
+                    res = supabase.table("user_permissions").select("*").eq("email", email_input).execute()
+                    if res.data:
+                        st.session_state["user_data"] = res.data[0]
+                        st.success("Accesso autorizzato!")
+                        st.rerun()
+                    else:
+                        st.error("Utente non autorizzato. Contatta l'amministratore BIM.")
                 else:
-                    st.error("Accesso negato. Utente non autorizzato.")
+                    st.error("Connessione al database non disponibile.")
     st.stop()
 
-# --- DASHBOARD POST-LOGIN ---
-current_user = st.session_state["user_data"]
-
-# Sidebar migliorata
+# --- DASHBOARD HOME (DOPO LOGIN) ---
 with st.sidebar:
-    st.image("https://img.icons8.com/clouds/100/architecture.png", width=80)
-    st.markdown(f"**Utente:** `{current_user['email']}`")
-    st.caption(f"Ruolo: {current_user.get('role', 'Standard User')}")
-    if st.button("🚪 Esci", use_container_width=True):
-        st.session_state["user_data"] = None
-        st.rerun()
+    st.image("https://img.icons8.com/clouds/100/architecture.png", width=70)
+    st.write(f"👤 **{st.session_state['user_data']['email']}**")
+    if st.button("🚪 Esci dal sistema", use_container_width=True):
+        logout()
 
-# --- CONTENUTO PRINCIPALE ---
-st.title("📊 Dashboard di Progetto")
+st.title("🏗️ Benvenuto nel CDE della Commessa")
+st.write("Usa il menu laterale per navigare tra i dati di progetto e le analisi BIM.")
 
-# Esempio di KPI (Dati fittizi, da collegare alle tue tabelle Supabase)
-# 
-col1, col2, col3, col4 = st.columns(4)
+# Card di benvenuto
+st.info("💡 **Consiglio:** Vai alla pagina **'Project'** per vedere lo stato di avanzamento dei dati sincronizzati da Revit.")
 
-with col1:
-    st.metric(label="Locali Totali", value="145", delta="+3 questa settimana")
-with col2:
-    st.metric(label="Superficie Totale", value="2,450 m²")
-with col3:
-    st.metric(label="Parametri Compilati", value="88%", delta="5%")
-with col4:
-    st.metric(label="Errori di Sync", value="0", delta_color="normal")
-
-st.divider()
-
-# Griglia di navigazione rapida
-st.subheader("Azioni Rapide")
 c1, c2 = st.columns(2)
 with c1:
-    with st.expander("📝 Gestione Locali", expanded=True):
-        st.write("Visualizza ed edita i parametri delle stanze dal database.")
-        if st.button("Vai ai Locali", key="go_rooms"):
-            st.info("Naviga tramite il menu laterale a '01_Room_Data'")
-with c2:
-    with st.expander("📂 Importazione Dati", expanded=True):
-        st.write("Carica nuovi file CSV o Excel estratti da Revit.")
-        if st.button("Vai a Import", key="go_import"):
-            st.info("Naviga tramite il menu laterale a '02_Import'")
+    st.image("https://images.unsplash.com/photo-1503387762-592dee58c160?auto=format&fit=crop&w=800&q=80", caption="Modellazione Informativa Avanzata")
