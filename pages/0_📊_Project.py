@@ -11,79 +11,63 @@ if not st.session_state.get("user_data"):
 st.title("📊 Riepilogo Commessa BIM")
 
 @st.cache_data(ttl=600)
-def fetch_project_kpis():
+def fetch_and_clean_data():
     try:
-        # 1. Recupero conteggi base
-        r_rooms = supabase.table("rooms").select("id", count="exact").execute()
-        r_items = supabase.table("items").select("id", count="exact").execute()
-        r_projs = supabase.table("projects").select("id", count="exact").execute()
+        # Recupero record
+        res_rooms = supabase.table("rooms").select("*").execute()
+        res_items = supabase.table("items").select("id", count="exact").execute()
+        res_projs = supabase.table("projects").select("id", count="exact").execute()
         
-        # 2. Recupero dati per analisi dinamica colonne
-        # Selezioniamo solo 1 riga per vedere i nomi delle colonne ed evitare l'errore 42703
-        sample_room = supabase.table("rooms").select("*").limit(1).execute()
+        df_rooms = pd.DataFrame(res_rooms.data)
         
         total_area = 0.0
-        if sample_room.data:
-            df_sample = pd.DataFrame(sample_room.data)
-            # Cerchiamo una colonna che somigli a "area" (case-insensitive)
-            area_col = next((c for c in df_sample.columns if 'area' in c.lower()), None)
+        
+        if not df_rooms.empty and 'parameters' in df_rooms.columns:
+            # --- LOGICA DI COERENZA VISIVA ---
+            # Espandiamo il campo JSON 'parameters' in colonne separate
+            df_params = pd.json_normalize(df_rooms['parameters'])
             
+            # Uniamo le colonne originali (id, created_at) con quelle estratte dal JSON
+            df_final = pd.concat([df_rooms.drop(columns=['parameters']), df_params], axis=1)
+            
+            # Cerchiamo l'area dentro i parametri estratti
+            area_col = next((c for c in df_final.columns if 'area' in c.lower()), None)
             if area_col:
-                # Se troviamo la colonna, recuperiamo tutti i valori di quella colonna
-                all_areas = supabase.table("rooms").select(area_col).execute()
-                df_areas = pd.DataFrame(all_areas.data)
-                total_area = pd.to_numeric(df_areas[area_col], errors='coerce').sum()
+                # Pulizia stringhe (es. rimuove " m²" se presente) e conversione
+                total_area = pd.to_numeric(
+                    df_final[area_col].astype(str).str.replace(',', '.').str.extract('(\d+\.?\d*)')[0], 
+                    errors='coerce'
+                ).sum()
+        else:
+            df_final = df_rooms
 
         return {
-            "rooms": r_rooms.count or 0,
-            "items": r_items.count or 0,
-            "projects": r_projs.count or 0,
-            "area": total_area,
+            "rooms_count": len(df_rooms),
+            "items_count": res_items.count or 0,
+            "projects_count": res_projs.count or 0,
+            "area_sum": total_area,
+            "df_display": df_final,
             "error": None
         }
     except Exception as e:
-        return {"rooms": 0, "items": 0, "projects": 0, "area": 0, "error": str(e)}
+        return {"rooms_count": 0, "items_count": 0, "projects_count": 0, "area_sum": 0, "df_display": pd.DataFrame(), "error": str(e)}
 
-stats = fetch_project_kpis()
+with st.spinner("Sincronizzazione coerente dei dati..."):
+    data = fetch_and_clean_data()
 
-if stats["error"]:
-    st.error(f"Dettaglio Errore: {stats['error']}")
-
-# --- UI DASHBOARD ---
+# --- DASHBOARD KPI ---
 c1, c2, c3, c4 = st.columns(4)
-
-with c1:
-    st.metric("📍 Totale Locali", stats["rooms"])
-with c2:
-    st.metric("📦 Oggetti/Items", stats["items"])
-with c3:
-    st.metric("📐 Superficie Totale", f"{stats['area']:,.2f} m²")
-with c4:
-    st.metric("🏢 Progetti Attivi", stats["projects"])
+c1.metric("📍 Locali Totali", data["rooms_count"])
+c2.metric("📦 Oggetti/Items", data["items_count"])
+c3.metric("📐 Superficie Totale", f"{data['area_sum']:,.2f} m²")
+c4.metric("🏢 Progetti Attivi", data["projects_count"])
 
 st.divider()
 
-# --- ISPEZIONE DATI ---
-st.subheader("🗂️ Ispezione Tabelle (Anteprima)")
-tab1, tab2, tab3 = st.tabs(["Locali", "Catalogo", "Progetti"])
-
-with tab1:
-    res = supabase.table("rooms").select("*").limit(10).execute()
-    if res.data:
-        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
-    else:
-        st.info("La tabella 'rooms' è vuota.")
-
-with tab2:
-    res = supabase.table("items").select("*").limit(10).execute()
-    if res.data:
-        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
-    else:
-        st.info("La tabella 'items' è vuota.")
-
-with tab3:
-    res = supabase.table("projects").select("*").limit(10).execute()
-    if res.data:
-        st.dataframe(pd.DataFrame(res.data), use_container_width=True)
-    else:
-        st.info("La tabella 'projects' è vuota.")
+# --- VISUALIZZAZIONE COERENTE ---
+st.subheader("📑 Anteprima Dati (Formattazione App)")
+if not data["df_display"].empty:
+    # Mostriamo la tabella "pulita" senza il campo JSON grezzo
+    st.dataframe(data["df_display"], use_container_width=True)
+else:
+    st.info("Nessun dato disponibile nelle tabelle selezionate.")
