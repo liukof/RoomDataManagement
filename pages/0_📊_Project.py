@@ -28,22 +28,34 @@ with st.sidebar:
         res_p = supabase.table("projects").select("*").execute()
         if res_p.data:
             df_p = pd.DataFrame(res_p.data)
-            name_col = find_column(df_p, ['project_code', 'name', 'project_name'])
+            
+            # Identifichiamo le colonne necessarie
+            code_col = find_column(df_p, ['project_code', 'code', 'codice'])
+            name_col = find_column(df_p, ['name', 'project_name', 'nome'])
             id_col = find_column(df_p, ['id', 'uuid'])
             
-            if name_col and id_col:
-                project_options = {row[name_col]: row[id_col] for _, row in df_p.iterrows()}
-                selected_name = st.selectbox("Seleziona Progetto", options=["Tutti"] + list(project_options.keys()))
+            if code_col and name_col and id_col:
+                # Creiamo un'etichetta combinata "Codice - Nome" per l'interfaccia
+                # Usiamo l'ID come valore reale per il filtro
+                project_options = {
+                    f"{row[code_col]} - {row[name_col]}": row[id_col] 
+                    for _, row in df_p.iterrows()
+                }
                 
-                if selected_name != "Tutti":
+                selected_name = st.selectbox(
+                    "Seleziona Progetto", 
+                    options=["Tutti i Progetti"] + list(project_options.keys())
+                )
+                
+                if selected_name != "Tutti i Progetti":
                     selected_project_name = selected_name
                     target_project_id = project_options[selected_name]
+            else:
+                st.error("Colonne progetto non trovate (richiesti Code e Name).")
         else:
             st.info("Nessun progetto trovato.")
     except Exception as e:
-        st.error("Errore nel caricamento progetti.")
-
-st.title(f"📊 Riepilogo: {selected_project_name}")
+        st.error(f"Errore nel caricamento sidebar: {e}")
 
 # --- RECUPERO DATI ---
 @st.cache_data(ttl=600)
