@@ -5,8 +5,8 @@ import io
 
 # --- 1. SETUP & CONNESSIONE ---
 try:
-    url = st.secrets["https://zegdtlkmfgoieuprbruz.supabase.co"]
-    key = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplZ2R0bGttZmdvaWV1cHJicnV6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY2OTY2NjIsImV4cCI6MjA4MjI3MjY2Mn0.SziiUnoXdGtzb1IRUSMnvBkfNPNqVAaeK1IQW5v31do"]
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
 except KeyError:
     st.error("Configurazione mancante nei Secrets! (SUPABASE_URL, SUPABASE_KEY)")
     st.stop()
