@@ -26,13 +26,14 @@ current_user = st.session_state["user_data"]
 is_admin = current_user.get("is_admin", False)
 allowed_ids = [int(i) for i in (current_user.get("allowed_projects") or [])]
 
-# --- 3. SIDEBAR & PROGETTO ---
+# --- 3. SIDEBAR & CONTESTO PROGETTO ---
 st.sidebar.title("🏗️ BIM Manager")
 st.sidebar.write(f"👤 **{current_user['email']}**")
 if st.sidebar.button("🚪 Logout"):
     st.session_state["user_data"] = None
     st.switch_page("app.py")
 
+# Recupero progetti autorizzati
 query = supabase.table("projects").select("*").order("project_code")
 if not is_admin:
     query = query.in_("id", allowed_ids if allowed_ids else [0])
@@ -48,24 +49,87 @@ project_id = int(project_options[selected_label]['id'])
 
 st.header("📍 Rooms & Item Lists")
 
-# --- 4. MAPPING PARAMETRI ---
+# --- 4. MAPPING PARAMETRI & FEEDBACK ---
 maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
 mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
-# --- 5. GESTIONE IMPORT / EXPORT (OMESSA PER BREVITÀ, MANTIENI QUELLA ESISTENTE) ---
-# ... (Mantenere qui il blocco expander 📥 Manage Rooms già funzionante)
+# --- 5. GESTIONE IMPORT / EXPORT / MANUAL ---
+with st.expander("📥 Manage Rooms (Import / Export / Manual Add)"):
+    tab_manual, tab_bulk = st.tabs(["➕ Add Single Room", "📁 Bulk Excel Sync"])
+    
+    with tab_manual:
+        with st.form("single_room_form"):
+            c1, c2 = st.columns(2)
+            new_r_num = c1.text_input("Room Number")
+            new_r_name = c2.text_input("Room Name")
+            if st.form_submit_button("➕ Create Single Room"):
+                if new_r_num and new_r_name:
+                    supabase.table("rooms").insert({
+                        "project_id": project_id, 
+                        "room_number": new_r_num.strip(), 
+                        "room_name_planned": new_r_name.strip(),
+                        "is_synced": False # Nuovo locale parte come non sincronizzato
+                    }).execute()
+                    st.success(f"Room {new_r_num} added!"); st.rerun()
+    
+    with tab_bulk:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("**Export Rooms**")
+            rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
+            if rooms_raw.data:
+                df_exp = pd.DataFrame([
+                    {
+                        "Number": r["room_number"], 
+                        "Name": r["room_name_planned"], 
+                        "Area (mq)": r.get("area", 0),
+                        "Synced": "Yes" if r.get("is_synced") else "No",
+                        **(r.get("parameters") or {})
+                    } for r in rooms_raw.data
+                ])
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: df_exp.to_excel(writer, index=False)
+                st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name=f"rooms_{project_id}.xlsx", use_container_width=True)
+        
+        with c2:
+            st.write("**Import Rooms**")
+            up_file = st.file_uploader("Upload XLSX", type=["xlsx"], key="rooms_up")
+            if up_file and st.button("🚀 Sync Rooms", use_container_width=True):
+                df_up = pd.read_excel(up_file, dtype=str)
+                bulk_data = []
+                for _, row in df_up.iterrows():
+                    params = {p: row[p] for p in mapped_params if p in row and pd.notna(row[p])}
+                    bulk_data.append({
+                        "project_id": project_id, 
+                        "room_number": str(row["Number"]).strip(), 
+                        "room_name_planned": str(row["Name"]), 
+                        "parameters": params,
+                        "is_synced": False # Reset sincronizzazione su modifica massiva
+                    })
+                supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
+                st.success("Sincronizzazione completata!"); st.rerun()
 
-# --- 6. TABELLA EDITABILE CON LOGICA DI SALVATAGGIO ROBUSTA ---
+# --- 6. TABELLA EDITABILE ---
 st.divider()
-search_q = st.text_input("🔍 Filter (Number or Name)", placeholder="Cerca...")
+search_q = st.text_input("🔍 Filter Rooms", placeholder="Cerca numero o nome...")
 
-# Fetch dei dati dal DB
 rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
 
 if rooms_resp.data:
     flat_data = []
     for r in rooms_resp.data:
-        row = {"id": int(r["id"]), "Number": r["room_number"], "Name": r["room_name_planned"], "Area (mq)": float(r.get("area") or 0)}
+        # Formattazione data di sincronizzazione
+        sync_at = r.get("last_sync_at")
+        sync_str = pd.to_datetime(sync_at).strftime('%d/%m/%Y %H:%M') if sync_at else "Mai"
+        
+        row = {
+            "id": int(r["id"]), 
+            "Sync": "✅" if r.get("is_synced") else "❌",
+            "DB_Sync": sync_str,
+            "Number": r["room_number"], 
+            "Name": r["room_name_planned"], 
+            "Area (mq)": float(r.get("area") or 0)
+        }
         p_json = r.get("parameters") or {}
         for p in mapped_params: row[p] = p_json.get(p, "")
         flat_data.append(row)
@@ -81,66 +145,64 @@ if rooms_resp.data:
     df_display.insert(0, "Select", False)
 
     st.subheader(f"📍 Rooms List ({len(df_display)})")
-    st.caption("💡 Ricorda: premi **Invio** o clicca fuori dalla cella per confermare la modifica prima di salvare.")
 
-    # Usiamo st.data_editor con una chiave specifica
-    # I cambiamenti vengono salvati in st.session_state["rooms_editor_key"]
-    edited_data = st.data_editor(
+    # Configurazione Editor con nuove colonne
+    updated_df = st.data_editor(
         df_display,
         use_container_width=True,
         hide_index=True,
         column_config={
             "id": None, 
+            "Sync": st.column_config.TextColumn("Status", width="small", help="Sincronizzato con Revit"),
+            "DB_Sync": st.column_config.TextColumn("Last Sync", width="medium"),
             "Number": st.column_config.TextColumn("Room Number", disabled=True),
             "Area (mq)": st.column_config.NumberColumn("📐 Area (mq)", format="%.2f m²", disabled=True),
             "Select": st.column_config.CheckboxColumn("Select", default=False)
         },
-        key="rooms_editor_key"
+        key="rooms_editor_final"
     )
 
-    # --- BOTTONI AZIONE ---
-    col_save, col_del = st.columns([1, 1])
+    # Bottoni Azione
+    col_save, col_del_sel, col_del_all = st.columns([2, 1, 1])
 
     with col_save:
-        # Il salvataggio ora è basato sul dataframe 'edited_data' restituito dall'editor
         if st.button("💾 SAVE ALL CHANGES", type="primary", use_container_width=True):
             success_count = 0
-            
-            # Recuperiamo i dati che Streamlit ha effettivamente recepito
-            for i in range(len(edited_data)):
-                row_new = edited_data.iloc[i]
+            for i in range(len(updated_df)):
+                row_new = updated_df.iloc[i]
                 row_old = df_display.iloc[i]
                 
-                # Ricostruzione parametri JSON
                 new_params = {p: row_new[p] for p in mapped_params}
                 old_params = {p: row_old[p] for p in mapped_params}
                 
-                # Verifica cambiamenti (Nome o Parametri JSON)
                 if (row_new["Name"] != row_old["Name"]) or (new_params != old_params):
-                    try:
-                        supabase.table("rooms").update({
-                            "room_name_planned": str(row_new["Name"]),
-                            "parameters": new_params
-                        }).eq("id", int(row_new["id"])).execute()
-                        success_count += 1
-                    except Exception as e:
-                        st.error(f"Errore sull'ID {row_new['id']}: {e}")
+                    # Se salviamo modifiche dal web, resettiamo lo stato 'is_synced' a False
+                    # perché il modello Revit ora è "indietro" rispetto al Web
+                    supabase.table("rooms").update({
+                        "room_name_planned": row_new["Name"],
+                        "parameters": new_params,
+                        "is_synced": False 
+                    }).eq("id", int(row_new["id"])).execute()
+                    success_count += 1
             
             if success_count > 0:
-                st.success(f"✅ {success_count} locali aggiornati correttamente!")
-                st.rerun()
+                st.success(f"Aggiornati {success_count} locali. Stato Sync resettato."); st.rerun()
             else:
-                st.info("Nessuna modifica rilevata. Assicurati di aver premuto **Invio** nelle celle modificate.")
+                st.info("Nessuna modifica rilevata.")
 
-    with col_del:
+    with col_del_sel:
         if st.button("🗑️ DELETE SELECTED", use_container_width=True):
-            ids_to_del = edited_data[edited_data["Select"] == True]["id"].tolist()
-            if ids_to_del:
-                supabase.table("rooms").delete().in_("id", ids_to_del).execute()
+            ids = updated_df[updated_df["Select"] == True]["id"].tolist()
+            if ids:
+                supabase.table("rooms").delete().in_("id", ids).execute()
                 st.rerun()
+    
+    with col_del_all:
+        if st.button("⚠️ DELETE ALL", type="secondary", use_container_width=True, help="Elimina tutti i locali del progetto"):
+            supabase.table("rooms").delete().eq("project_id", project_id).execute()
+            st.rerun()
 
-# --- 7. ASSEGNAZIONE MASSIVA ITEM (MANTIENI QUELLA ESISTENTE) ---
-# ... (Mantenere qui il blocco 📦 Bulk Item Assignment già funzionante)
+# --- 7. ASSEGNAZIONE MASSIVA ITEM ---
 st.divider()
 st.subheader("📦 Bulk Item Assignment")
 catalog = supabase.table("items").select("*").eq("project_id", project_id).execute().data
@@ -150,8 +212,7 @@ if catalog:
         c1, c2 = st.columns([3, 1])
         t_item = c1.selectbox("Seleziona Item:", list(item_opt.keys()))
         t_qty = c2.number_input("Quantità", min_value=1, value=1)
-        if st.form_submit_button("🚀 Assign to Filtered Set"):
-            # Usiamo gli ID del dataframe visualizzato (rispetta i filtri di ricerca)
+        if st.form_submit_button("🚀 Assign to Filtered Set", use_container_width=True):
             bulk = [{"room_id": int(rid), "item_id": item_opt[t_item], "quantity": int(t_qty)} for rid in df_display['id'].tolist()]
             supabase.table("room_items").insert(bulk).execute()
             st.success("Assegnazione completata!"); st.rerun()
