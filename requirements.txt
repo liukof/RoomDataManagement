@@ -4,3 +4,4 @@ pandas
 xlsxwriter
 openpyxl
 st-gsheets-connection
+extra-streamlit-components
