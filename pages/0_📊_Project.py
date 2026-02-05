@@ -17,9 +17,9 @@ def find_column(df, possible_names):
         if found: return found
     return None
 
-# --- INIZIALIZZAZIONE ---
-selected_project_name = "Tutti i Progetti"
-target_project_id = None
+# --- LOGICA PERSISTENZA PROGETTO ---
+if "selected_project_id" not in st.session_state:
+    st.session_state["selected_project_id"] = None
 
 # --- SIDEBAR: SELEZIONE PROGETTO ---
 with st.sidebar:
@@ -35,21 +35,35 @@ with st.sidebar:
             id_col = find_column(df_p, ['id', 'uuid'])
             
             if code_col and name_col and id_col:
-                # Creiamo un'etichetta combinata "Codice - Nome" per l'interfaccia
-                # Usiamo l'ID come valore reale per il filtro
                 project_options = {
                     f"{row[code_col]} - {row[name_col]}": row[id_col] 
                     for _, row in df_p.iterrows()
                 }
                 
+                options_labels = ["Tutti i Progetti"] + list(project_options.keys())
+                
+                # Trova l'indice del progetto precedentemente selezionato
+                default_index = 0
+                if st.session_state["selected_project_id"]:
+                    for i, p_id in enumerate(project_options.values()):
+                        if p_id == st.session_state["selected_project_id"]:
+                            default_index = i + 1 # +1 perché c'è "Tutti i Progetti"
+                            break
+                
                 selected_name = st.selectbox(
                     "Seleziona Progetto", 
-                    options=["Tutti i Progetti"] + list(project_options.keys())
+                    options=options_labels,
+                    index=default_index,
+                    key="project_selector_overview"
                 )
                 
                 if selected_name != "Tutti i Progetti":
                     selected_project_name = selected_name
                     target_project_id = project_options[selected_name]
+                    st.session_state["selected_project_id"] = target_project_id
+                else:
+                    st.session_state["selected_project_id"] = None
+                    target_project_id = None
             else:
                 st.error("Colonne progetto non trovate (richiesti Code e Name).")
         else:

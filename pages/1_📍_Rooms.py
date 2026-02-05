@@ -40,11 +40,31 @@ if not is_admin:
     query = query.in_("id", allowed_ids if allowed_ids else [0])
 projects_list = query.execute().data
 
+# --- LOGICA PERSISTENZA PROGETTO ---
+if "selected_project_id" not in st.session_state:
+    st.session_state["selected_project_id"] = None
+
 project_id = None
 if projects_list:
-    project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
-    selected_label = st.selectbox("Current Project Context:", list(project_options.keys()))
-    project_id = int(project_options[selected_label]['id'])
+    project_options = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in projects_list}
+    project_labels = list(project_options.keys())
+    
+    # Trova l'indice del progetto precedentemente selezionato
+    default_index = 0
+    if st.session_state["selected_project_id"]:
+        for i, p_id in enumerate(project_options.values()):
+            if p_id == st.session_state["selected_project_id"]:
+                default_index = i
+                break
+    
+    selected_label = st.selectbox(
+        "Current Project Context:", 
+        project_labels, 
+        index=default_index,
+        key="project_selector"
+    )
+    project_id = project_options[selected_label]
+    st.session_state["selected_project_id"] = project_id
 else:
     st.info("Nessun progetto assegnato.")
     st.stop()
