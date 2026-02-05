@@ -122,21 +122,45 @@ with st.expander("📥 Import / Export Rooms"):
             df_up = pd.read_excel(up_file, dtype=str)
             bulk_data = []
             for _, row in df_up.iterrows():
-                if pd.notna(row.get("Number")):
-                    p_dict = {p: row[p] for p in mapped_params if p in row and pd.notna(row[p])}
-                    bulk_data.append({
+                # Prendiamo il numero stanza (obbligatorio)
+                num = str(row.get("Number", "")).strip() if pd.notna(row.get("Number")) else None
+                
+                if num:
+                    # Pulizia parametri dinamici (evitiamo NaN)
+                    p_dict = {}
+                    for p in mapped_params:
+                        if p in row and pd.notna(row[p]):
+                            p_dict[p] = str(row[p]).strip()
+                    
+                    # Preparazione riga
+                    room_entry = {
                         "project_id": project_id, 
-                        "room_number": str(row["Number"]).strip(),
+                        "room_number": num,
                         "room_name_planned": str(row.get("Name", "")).strip() if pd.notna(row.get("Name")) else "",
-                        "area": float(row["Area"]) if pd.notna(row.get("Area")) else None,
                         "parameters": p_dict, 
                         "is_synced": False
-                    })
+                    }
+                    
+                    # Gestione Area (solo se valida)
+                    area_val = row.get("Area")
+                    if pd.notna(area_val):
+                        try:
+                            room_entry["area"] = float(area_val)
+                        except:
+                            room_entry["area"] = None
+                    else:
+                        room_entry["area"] = None
+                        
+                    bulk_data.append(room_entry)
             
             if bulk_data:
-                supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
-                st.success(f"Sincronizzate {len(bulk_data)} stanze!")
-                st.rerun()
+                try:
+                    supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
+                    st.success(f"Sincronizzate {len(bulk_data)} stanze!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore durante l'upload: {str(e)}")
+                    st.info("💡 Verifica che nel database esista un indice UNIQUE su 'project_id' e 'room_number'.")
 
 # --- AGGIUNTA SINGOLA ---
 st.divider()
