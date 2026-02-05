@@ -19,6 +19,7 @@ supabase = get_supabase_client()
 
 # --- 2. CONTROLLO ACCESSO ---
 if "user_data" not in st.session_state or st.session_state["user_data"] is None:
+    st.warning("⚠️ Effettua il login per accedere.")
     st.switch_page("app.py")
     st.stop()
 
@@ -26,63 +27,139 @@ current_user = st.session_state["user_data"]
 is_admin = current_user.get("is_admin", False)
 allowed_ids = [int(i) for i in (current_user.get("allowed_projects") or [])]
 
-# --- 3. SIDEBAR & RECUPERO PROJECT_ID (Risolve il NameError) ---
+# --- 3. SIDEBAR & CONTESTO PROGETTO ---
 st.sidebar.title("🏗️ BIM Manager")
 st.sidebar.write(f"👤 **{current_user['email']}**")
 if st.sidebar.button("🚪 Logout"):
     st.session_state["user_data"] = None
     st.switch_page("app.py")
 
-# Caricamento progetti autorizzati per definire il contesto
-proj_query = supabase.table("projects").select("*").order("project_code")
+# Recupero Progetti per definire project_id
+query = supabase.table("projects").select("*").order("project_code")
 if not is_admin:
-    proj_query = proj_query.in_("id", allowed_ids if allowed_ids else [0])
-projects_list = proj_query.execute().data
+    query = query.in_("id", allowed_ids if allowed_ids else [0])
+projects_list = query.execute().data
 
-if not projects_list:
-    st.error("Nessun progetto assegnato al tuo profilo.")
+project_id = None
+if projects_list:
+    project_options = {f"{p['project_code']} - {p['project_name']}": p for p in projects_list}
+    selected_label = st.selectbox("Current Project Context:", list(project_options.keys()))
+    project_id = int(project_options[selected_label]['id'])
+else:
+    st.info("Nessun progetto assegnato.")
     st.stop()
 
-# Definizione del project_id tramite selectbox
-project_options = {f"{p['project_code']} - {p['project_name']}": p['id'] for p in projects_list}
-selected_proj_label = st.sidebar.selectbox("Project Context:", list(project_options.keys()))
-project_id = project_options[selected_proj_label] # <--- Ora project_id è definito!
-
-st.header("📍 Rooms & Sync Control")
-
-# --- 4. MAPPING PARAMETRI ---
+# --- 4. RECUPERO PARAMETRI MAPPATI ---
 maps_resp = supabase.table("parameter_mappings").select("db_column_name").eq("project_id", project_id).execute()
 mapped_params = [m['db_column_name'] for m in maps_resp.data]
 
-# --- 5. GESTIONE IMPORT / EXPORT ---
-with st.expander("📥 Manage Rooms (Bulk Import/Export)"):
+# --- 5. LOGICA PAGINA: ROOMS MANAGEMENT ---
+st.header("📍 Rooms Management")
+
+# --- IMPORT / EXPORT ---
+with st.expander("📥 Import / Export Rooms"):
     c1, c2 = st.columns(2)
     with c1:
         st.write("**Export Rooms**")
-        rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute()
-        if rooms_raw.data:
+        rooms_raw = supabase.table("rooms").select("*").eq("project_id", project_id).order("room_number").execute().data
+        if rooms_raw:
             df_exp = pd.DataFrame([{
-                "Number": r["room_number"], "Name": r["room_name_planned"], "Area": r.get("area"),
-                **(r.get("parameters") or {})} for r in rooms_raw.data])
+                "Number": r["room_number"], 
+                "Name": r["room_name_planned"], 
+                "Area": r.get("area"),
+                **(r.get("parameters") or {})
+            } for r in rooms_raw])
             buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: df_exp.to_excel(writer, index=False)
-            st.download_button("⬇️ Download Excel", data=buf.getvalue(), file_name="rooms_sync.xlsx")
+            with pd.ExcelWriter(buf, engine='xlsxwriter') as writer: 
+                df_exp.to_excel(writer, index=False)
+            st.download_button(
+                "⬇️ Download Excel", 
+                data=buf.getvalue(), 
+                file_name=f"rooms_proj_{project_id}.xlsx"
+            )
+        else:
+            st.info("Nessuna stanza trovata.")
+        
+        # Template vuoto sempre disponibile
+        st.write("---")
+        st.write("**Download Template Vuoto**")
+        template_columns = ["Number", "Name", "Area"] + mapped_params
+        df_template = pd.DataFrame(columns=template_columns)
+        buf_template = io.BytesIO()
+        with pd.ExcelWriter(buf_template, engine='xlsxwriter') as writer:
+            df_template.to_excel(writer, index=False)
+        st.download_button(
+            "📄 Download Template", 
+            data=buf_template.getvalue(), 
+            file_name=f"rooms_template_proj_{project_id}.xlsx",
+            help="Scarica un file Excel vuoto con le colonne corrette da compilare"
+        )
 
     with c2:
-        st.write("**Import/Sync XLSX**")
-        up_file = st.file_uploader("Upload XLSX", type=["xlsx"])
-        if up_file and st.button("🚀 Start Bulk Sync"):
+        st.write("**Import Rooms**")
+        up_file = st.file_uploader("Upload Rooms XLSX", type=["xlsx"])
+        if up_file and st.button("🚀 Upload & Sync"):
             df_up = pd.read_excel(up_file, dtype=str)
             bulk_data = []
             for _, row in df_up.iterrows():
-                p_dict = {p: row[p] for p in mapped_params if p in row and pd.notna(row[p])}
-                bulk_data.append({
-                    "project_id": project_id, "room_number": str(row["Number"]).strip(),
-                    "room_name_planned": str(row["Name"]), "parameters": p_dict, "is_synced": False})
-            supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
-            st.success("Sync completato!"); st.rerun()
+                if pd.notna(row.get("Number")):
+                    p_dict = {p: row[p] for p in mapped_params if p in row and pd.notna(row[p])}
+                    bulk_data.append({
+                        "project_id": project_id, 
+                        "room_number": str(row["Number"]).strip(),
+                        "room_name_planned": str(row.get("Name", "")).strip() if pd.notna(row.get("Name")) else "",
+                        "area": float(row["Area"]) if pd.notna(row.get("Area")) else None,
+                        "parameters": p_dict, 
+                        "is_synced": False
+                    })
+            
+            if bulk_data:
+                supabase.table("rooms").upsert(bulk_data, on_conflict="project_id,room_number").execute()
+                st.success(f"Sincronizzate {len(bulk_data)} stanze!")
+                st.rerun()
 
-# --- 6. LOGICA ICONE 4 STATI ---
+# --- AGGIUNTA SINGOLA ---
+st.divider()
+with st.form("new_room_form"):
+    st.subheader("➕ Add Single Room")
+    c1, c2, c3 = st.columns(3)
+    room_num = c1.text_input("Room Number*", placeholder="es: 101")
+    room_name = c2.text_input("Room Name", placeholder="es: Ufficio")
+    room_area = c3.number_input("Area (m²)", min_value=0.0, step=0.1, format="%.2f")
+    
+    # Parametri aggiuntivi
+    if mapped_params:
+        st.write("**Parametri Aggiuntivi:**")
+        param_values = {}
+        cols = st.columns(min(3, len(mapped_params)))
+        for idx, param in enumerate(mapped_params):
+            with cols[idx % len(cols)]:
+                param_values[param] = st.text_input(param, key=f"param_{param}")
+    
+    if st.form_submit_button("💾 Save Room", use_container_width=True):
+        if room_num:
+            new_room = {
+                "project_id": project_id,
+                "room_number": room_num.strip(),
+                "room_name_planned": room_name.strip() if room_name else "",
+                "area": room_area if room_area > 0 else None,
+                "parameters": {k: v for k, v in param_values.items() if v} if mapped_params else {},
+                "is_synced": False
+            }
+            try:
+                supabase.table("rooms").insert(new_room).execute()
+                st.success(f"Stanza {room_num} aggiunta!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore: {str(e)}")
+        else:
+            st.warning("Il numero della stanza è obbligatorio!")
+
+# --- TABELLA GESTIONE ---
+st.divider()
+st.subheader("📋 Current Rooms")
+
+# Legenda stati
 st.info("💡 **Status**: ✅ Sincronizzato | ⚠️ Modificato Web | ❗ Non in Revit | ❌ Mai Sincronizzato")
 
 search_q = st.text_input("🔍 Filtra locali", placeholder="Cerca numero o nome...")
@@ -91,53 +168,103 @@ rooms_resp = supabase.table("rooms").select("*").eq("project_id", project_id).or
 if rooms_resp.data:
     flat_data = []
     for r in rooms_resp.data:
-        is_synced = r.get("is_synced") # True, False o None
+        # Logica icone 4 stati
+        is_synced = r.get("is_synced")
         last_sync = r.get("last_sync_at")
         
-        if is_synced is True: status_icon = "✅"
-        elif is_synced is False and last_sync: status_icon = "⚠️"
-        elif is_synced is None and last_sync: status_icon = "❗"
-        else: status_icon = "❌"
+        if is_synced is True: 
+            status_icon = "✅"
+        elif is_synced is False and last_sync: 
+            status_icon = "⚠️"
+        elif is_synced is None and last_sync: 
+            status_icon = "❗"
+        else: 
+            status_icon = "❌"
             
         sync_str = pd.to_datetime(last_sync).strftime('%d/%m/%Y %H:%M') if last_sync else "Mai"
         
-        row = {"id": int(r["id"]), "Status": status_icon, "Number": r["room_number"], 
-               "Name": r["room_name_planned"], "Area (mq)": float(r.get("area") or 0), "Last_Sync": sync_str}
+        row = {
+            "id": int(r["id"]), 
+            "Status": status_icon, 
+            "Number": r["room_number"], 
+            "Name": r["room_name_planned"], 
+            "Area (m²)": float(r.get("area") or 0), 
+            "Last_Sync": sync_str
+        }
+        
+        # Aggiungi parametri mappati
         p_json = r.get("parameters") or {}
-        for p in mapped_params: row[p] = p_json.get(p, "")
+        for p in mapped_params: 
+            row[p] = p_json.get(p, "")
+        
         flat_data.append(row)
     
     df_display = pd.DataFrame(flat_data)
+    
+    # Filtro ricerca
     if search_q:
         mask = df_display.apply(lambda x: x.astype(str).str.contains(search_q, case=False).any(), axis=1)
         df_display = df_display[mask].copy()
 
     df_display.insert(0, "Select", False)
 
+    # Data Editor
     updated_df = st.data_editor(
-        df_display, use_container_width=True, hide_index=True,
+        df_display, 
+        use_container_width=True, 
+        hide_index=True,
         column_config={
             "id": None, 
+            "Select": st.column_config.CheckboxColumn("Elimina", default=False),
             "Status": st.column_config.TextColumn("Sync", width="small"),
-            "Number": st.column_config.TextColumn("Room Number", disabled=True),
-            "Area (mq)": st.column_config.NumberColumn("📐 Area", format="%.2f m²", disabled=True),
+            "Number": st.column_config.TextColumn("Room Number"),
+            "Name": st.column_config.TextColumn("Room Name"),
+            "Area (m²)": st.column_config.NumberColumn("📐 Area", format="%.2f m²"),
             "Last_Sync": st.column_config.TextColumn("Data Sync", disabled=True)
         },
-        key="rooms_v3_editor"
+        key="rooms_editor_v4"
     )
 
-    if st.button("💾 SAVE ALL CHANGES", type="primary", use_container_width=True):
-        success_count = 0
-        for i in range(len(updated_df)):
-            row_new = updated_df.iloc[i]; row_old = df_display.iloc[i]
-            new_p = {p: row_new[p] for p in mapped_params}
-            old_p = {p: row_old[p] for p in mapped_params}
+    # Pulsanti azione
+    col_save, col_delete = st.columns(2)
+    
+    with col_save:
+        if st.button("💾 SAVE ALL CHANGES", type="primary", use_container_width=True):
+            success_count = 0
+            for i in range(len(updated_df)):
+                row_new = updated_df.iloc[i]
+                row_old = df_display.iloc[i]
+                
+                # Confronta parametri
+                new_p = {p: row_new[p] for p in mapped_params if p in row_new}
+                old_p = {p: row_old[p] for p in mapped_params if p in row_old}
+                
+                # Verifica se ci sono modifiche
+                if (row_new["Name"] != row_old["Name"]) or \
+                   (row_new["Area (m²)"] != row_old["Area (m²)"]) or \
+                   (new_p != old_p):
+                    supabase.table("rooms").update({
+                        "room_name_planned": row_new["Name"], 
+                        "area": float(row_new["Area (m²)"]) if row_new["Area (m²)"] > 0 else None,
+                        "parameters": new_p,
+                        "is_synced": False  # Reset per forzare handshake Revit
+                    }).eq("id", int(row_new["id"])).execute()
+                    success_count += 1
             
-            if (row_new["Name"] != row_old["Name"]) or (new_p != old_p):
-                supabase.table("rooms").update({
-                    "room_name_planned": row_new["Name"], "parameters": new_p,
-                    "is_synced": False # Reset per forzare handshake Revit
-                }).eq("id", int(row_new["id"])).execute()
-                success_count += 1
-        if success_count > 0:
-            st.success(f"Aggiornati {success_count} locali."); st.rerun()
+            if success_count > 0:
+                st.success(f"Aggiornate {success_count} stanze.")
+                st.rerun()
+            else:
+                st.info("Nessuna modifica rilevata.")
+    
+    with col_delete:
+        if st.button("🗑️ DELETE SELECTED", use_container_width=True):
+            ids_to_del = [int(i) for i in updated_df[updated_df["Select"] == True]["id"].tolist()]
+            if ids_to_del:
+                supabase.table("rooms").delete().in_("id", ids_to_del).execute()
+                st.success(f"Eliminate {len(ids_to_del)} stanze.")
+                st.rerun()
+            else:
+                st.warning("Nessuna stanza selezionata per l'eliminazione.")
+else:
+    st.info("Usa il form sopra o l'import Excel per aggiungere delle stanze.")
