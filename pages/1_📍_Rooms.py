@@ -122,19 +122,9 @@ with st.expander("📥 Import / Export Rooms"):
 st.divider()
 with st.form("new_room_form"):
     st.subheader("➕ Add Single Room")
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     room_num = c1.text_input("Room Number*", placeholder="es: 101")
     room_name = c2.text_input("Room Name", placeholder="es: Ufficio")
-    room_area = c3.number_input("Area (m²)", min_value=0.0, step=0.1, format="%.2f")
-    
-    # Parametri aggiuntivi
-    if mapped_params:
-        st.write("**Parametri Aggiuntivi:**")
-        param_values = {}
-        cols = st.columns(min(3, len(mapped_params)))
-        for idx, param in enumerate(mapped_params):
-            with cols[idx % len(cols)]:
-                param_values[param] = st.text_input(param, key=f"param_{param}")
     
     if st.form_submit_button("💾 Save Room", use_container_width=True):
         if room_num:
@@ -142,8 +132,8 @@ with st.form("new_room_form"):
                 "project_id": project_id,
                 "room_number": room_num.strip(),
                 "room_name_planned": room_name.strip() if room_name else "",
-                "area": room_area if room_area > 0 else None,
-                "parameters": {k: v for k, v in param_values.items() if v} if mapped_params else {},
+                "area": None,
+                "parameters": {},
                 "is_synced": False
             }
             try:
